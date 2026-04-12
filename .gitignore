@@ -1,0 +1,45 @@
+# ===================================================
+# 競馬YouTube Shorts自動投稿システム .gitignore
+# ===================================================
+
+# 認証情報（絶対にコミットしない）
+.env
+client_secrets.json
+token.json
+
+# 生成された動画・音声ファイル
+output/
+
+# フォントファイル（ライセンスの関係で除外、手動で配置すること）
+assets/fonts/*.ttf
+assets/fonts/*.otf
+
+# BGMファイル（著作権の関係で除外）
+assets/bgm/*.mp3
+assets/bgm/*.wav
+
+# 背景画像（著作権の関係で除外）
+assets/backgrounds/
+
+# Python キャッシュ
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# 仮想環境
+venv/
+env/
+.venv/
+
+# IDEファイル
+.vscode/
+.idea/
+*.swp
+
+# OS生成ファイル
+.DS_Store
+Thumbs.db
+
+# ログファイル
+*.log

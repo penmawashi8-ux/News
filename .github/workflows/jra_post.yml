@@ -1,0 +1,142 @@
+name: JRA 競馬情報 YouTube Shorts 自動投稿
+
+# ========================================
+# トリガー設定
+# ========================================
+on:
+  # 毎週土・日の22:00 JST（= UTC 13:00）に自動実行
+  # ※ 祝日開催は is_jra_race_day() がJRA公式サイトで確認して対応
+  schedule:
+    - cron: '0 13 * * 6,0'
+
+  # 手動実行（GitHub Actionsの "Run workflow" ボタンから）
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'ドライランモード（YouTubeに投稿しない）'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      force:
+        description: '開催日判定をスキップして強制実行'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+# ========================================
+# 権限設定
+# ========================================
+permissions:
+  contents: read
+
+# ========================================
+# ジョブ定義
+# ========================================
+jobs:
+  post-jra-shorts:
+    name: JRA Shorts 投稿
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ========== リポジトリのチェックアウト ==========
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      # ========== Python セットアップ ==========
+      - name: Python 3.11 セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ========== システム依存パッケージのインストール ==========
+      - name: FFmpeg インストール
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg fonts-noto-cjk
+          ffmpeg -version
+
+      # ========== NotoSansJP フォントの配置 ==========
+      - name: フォントファイルの配置
+        run: |
+          mkdir -p assets/fonts
+          # システムにインストールされたNotoフォントをコピー
+          FONT_SRC=$(fc-list | grep -i "NotoSansCJK\|NotoSansJP\|noto.*bold" | head -1 | cut -d: -f1)
+          if [ -n "$FONT_SRC" ]; then
+            cp "$FONT_SRC" assets/fonts/NotoSansJP-Bold.ttf
+            echo "フォントをコピーしました: $FONT_SRC"
+          else
+            echo "NotoSans フォントが見つかりません。デフォルトフォントを使用します。"
+          fi
+
+      # ========== VOICEVOX エンジン起動（Docker） ==========
+      - name: VOICEVOX エンジン起動
+        run: |
+          docker pull voicevox/voicevox_engine:cpu-ubuntu20.04-latest
+          docker run -d \
+            --name voicevox \
+            -p 50021:50021 \
+            voicevox/voicevox_engine:cpu-ubuntu20.04-latest
+          echo "VOICEVOX エンジン起動中..."
+
+      # ========== Python パッケージのインストール ==========
+      - name: Python パッケージインストール
+        run: pip install -r requirements.txt
+
+      # ========== VOICEVOX の起動待ち ==========
+      - name: VOICEVOX の起動を待機
+        run: |
+          echo "VOICEVOX の起動を最大60秒待機..."
+          for i in $(seq 1 12); do
+            if curl -s http://localhost:50021/version > /dev/null 2>&1; then
+              echo "VOICEVOX 起動確認完了"
+              break
+            fi
+            echo "待機中... ($i/12)"
+            sleep 5
+          done
+
+      # ========== JRA動画生成・投稿 ==========
+      - name: JRA YouTube Shorts 生成・投稿
+        env:
+          # Anthropic API Key（AI原稿生成）
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # YouTube 認証ファイル（Base64エンコード済み）
+          YOUTUBE_CLIENT_SECRETS: ${{ secrets.YOUTUBE_CLIENT_SECRETS }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          # VOICEVOX 設定
+          VOICEVOX_URL: http://localhost:50021
+          VOICEVOX_SPEAKER_ID: 3
+          # ドライランモード
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        run: |
+          FORCE_FLAG=""
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            FORCE_FLAG="--force"
+          fi
+          DRY_RUN_FLAG=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+          python main_jra.py $FORCE_FLAG $DRY_RUN_FLAG
+
+      # ========== VOICEVOX コンテナの停止 ==========
+      - name: VOICEVOX コンテナの停止
+        if: always()
+        run: docker stop voicevox && docker rm voicevox || true
+
+      # ========== アップロードログの保存（失敗時） ==========
+      - name: ログのアップロード（失敗時）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jra-error-logs
+          path: output/
+          retention-days: 3
