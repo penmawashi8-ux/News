@@ -72,26 +72,25 @@ def _format_sanctions(sanctions: list[dict[str, Any]]) -> str:
 def _format_news(news: list[dict[str, Any]]) -> str:
     """
     ニュース（今日の出来事）をAIプロンプト用テキストに変換する。
-    構造化イベントがあればイベント単位で整形し、AIが全件を読み上げやすくする。
+    各イベントに「N件目」番号を付与し、AIが番号付きで読み上げられるようにする。
     """
     if not news:
         return "（ニュースなし）"
 
     lines = []
+    item_num = 0
     for n in news[:2]:
         events: list[dict[str, str]] = n.get("events", [])
         if events:
-            current_section = ""
             for ev in events:
+                item_num += 1
                 section = ev.get("section", "")
-                if section and section != current_section:
-                    lines.append(f"\n■ {section}")
-                    current_section = section
                 title = ev.get("title", "")
                 race = ev.get("race", "")
                 body = ev.get("body", "")
                 race_str = f"（{race}）" if race else ""
-                lines.append(f"【{title}】{race_str}")
+                section_str = f"　{section}" if section else ""
+                lines.append(f"\n【{item_num}件目】{title}{race_str}{section_str}")
                 if body:
                     lines.append(body)
         else:
@@ -446,14 +445,14 @@ def generate_jra_news_script(news: list[dict[str, Any]]) -> str:
 {_format_news(news)}
 
 【原稿構成（必ず守ること）】
-1. オープニング（3秒）: 「本日のJRA今日の出来事をお届けします！」から始める
+1. オープニング: 「本日のJRA今日の出来事をお届けします！」から始める
 2. 出来事紹介（全件・省略禁止）:
-   - 上記「今日の出来事」に記載されている全ての事象を一件ずつ読み上げること（省略禁止）
-   - 各事象ごとに：競馬場名・レース番号・馬名・内容を1〜2文で具体的に読み上げること
-   - 事象の件数に応じて字数を調整すること
-3. クロージング（5秒）: 「以上、本日のJRA情報でした！チャンネル登録よろしく！」で締める
+   - 上記「今日の出来事」の【N件目】に対応して「N件目、」と番号を必ず付けて読み上げること
+   - 例：「1件目、中山10Rで横山武史騎手が...」「2件目、阪神4Rで...」
+   - 競馬場名・レース番号・馬名・内容を1〜2文で読み上げること（省略禁止）
+3. クロージング: 「以上、本日のJRA情報でした！チャンネル登録よろしく！」で締める
 
-全事象を漏れなく読み上げた、話し言葉の原稿のみ出力してください（余計な説明文は不要）。"""
+「N件目、」という番号を必ず出力に含めた、話し言葉の原稿のみ出力してください（余計な説明文は不要）。"""
 
     result = _call_ai(prompt)
     if result:

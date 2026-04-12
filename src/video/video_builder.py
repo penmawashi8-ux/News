@@ -13,6 +13,7 @@ FFmpegを使って競馬情報YouTube Shorts用の縦型動画を生成する。
 """
 
 import os
+import re
 import random
 import subprocess
 import textwrap
@@ -132,20 +133,23 @@ def _resolve_font_path() -> str:
     return ""
 
 
+_NEWS_ITEM_PATTERN = re.compile(r'^\d+件目')
+
+
 def _make_subtitle_cuts(text: str) -> list[dict]:
     """
     テキストを字幕カット単位に分割する。
 
-    AIナレーション原稿は全角スペース（　）で意味単位を区切っている。
-    その区切りを優先し、1カット最大 SUBTITLE_LINES_PER_CUT 行に収める。
-    意味単位が途中で切れないようにし、溢れる場合は次のカットへ。
+    分割ルール（優先順）:
+      1. 「N件目、」で始まる意味単位は必ず新しいカットを開始する
+         （ニュース動画でイベント境界を明確にする）
+      2. 全角スペース（　）で意味単位を区切る
+      3. 1カット最大 SUBTITLE_LINES_PER_CUT 行に収める
 
     Returns:
         [{"lines": [str, ...], "chars": int}, ...]
-        chars はそのカットの文字数（表示時間の配分比率に使用）
     """
-    # 全角スペースで意味単位を分割（AIナレーションの区切り）
-    # 全角スペースがない場合は通常の半角スペースも試みる
+    # 全角スペースで意味単位を分割
     if "\u3000" in text:
         units = [u.strip() for u in text.split("\u3000") if u.strip()]
     else:
@@ -160,13 +164,15 @@ def _make_subtitle_cuts(text: str) -> list[dict]:
         if not wrapped:
             continue
 
-        # この意味単位を追加すると行数上限を超える → 現カットを確定して次へ
-        if current_lines and len(current_lines) + len(wrapped) > SUBTITLE_LINES_PER_CUT:
+        # 「N件目、」で始まる場合は必ず新しいカットを開始
+        is_news_item = bool(_NEWS_ITEM_PATTERN.match(unit))
+
+        if current_lines and (is_news_item or len(current_lines) + len(wrapped) > SUBTITLE_LINES_PER_CUT):
             cuts.append({"lines": current_lines, "chars": current_chars})
             current_lines = []
             current_chars = 0
 
-        # 1意味単位だけで行数上限を超える場合は SUBTITLE_LINES_PER_CUT 行ずつ分割
+        # 1意味単位が行数上限を超える場合は分割
         while len(wrapped) > SUBTITLE_LINES_PER_CUT:
             chunk = wrapped[:SUBTITLE_LINES_PER_CUT]
             cuts.append({"lines": chunk, "chars": sum(len(l) for l in chunk)})
