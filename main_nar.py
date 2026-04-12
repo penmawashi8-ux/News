@@ -8,12 +8,13 @@ NAR（地方競馬）YouTube Shorts 自動投稿 エントリーポイント
   4. VOICEVOX音声生成
   5. 動画生成
   6. YouTube投稿（--dry-runでなければ）
-  7. 一時ファイル削除
+  7. 一時ファイル削除（ドライランモードでは音声・動画ファイルを保持）
   8. 結果サマリーをログ出力
 
 使用方法:
-  python main_nar.py           # 通常実行（YouTube投稿あり）
-  python main_nar.py --dry-run # ドライラン（YouTube投稿なし）
+  python main_nar.py                      # 通常実行（YouTube投稿あり）
+  python main_nar.py --dry-run            # ドライラン（投稿なし・動画をoutput/に保存）
+  python main_nar.py --dry-run --force    # 開催日問わずドライラン実行
 """
 
 import argparse
@@ -167,12 +168,19 @@ def main() -> int:
             logger.info("[INFO] Step 6: ドライランモード - YouTube投稿をスキップ")
             video_id = "DRY_RUN"
 
-        # ========== Step 7: 一時ファイル削除 ==========
-        logger.info("[INFO] Step 7: 一時ファイル削除")
-        cleanup_temp_files(audio_path)
-        # 動画ファイルは投稿完了後に削除（ドライランでは残す）
-        if not dry_run and video_path:
-            cleanup_temp_files(video_path)
+        # ========== Step 7: ファイル後処理 ==========
+        logger.info("[INFO] Step 7: ファイル後処理")
+        if dry_run:
+            # ドライランモード: 音声・動画ファイルを両方 output/ に保持して確認できるようにする
+            abs_video = Path(video_path).resolve()
+            abs_audio = Path(audio_path).resolve()
+            logger.info("[INFO] ドライランモード: 生成ファイルを保持します")
+            logger.info(f"[INFO] 動画ファイル : {abs_video}")
+            logger.info(f"[INFO] 音声ファイル : {abs_audio}")
+            logger.info("[INFO] 確認後に不要であれば output/ ディレクトリを手動削除してください")
+        else:
+            # 本番モード: 投稿済みの一時ファイルを削除
+            cleanup_temp_files(audio_path, video_path)
 
         # ========== Step 8: 結果サマリー ==========
         logger.info("=" * 60)
@@ -185,15 +193,17 @@ def main() -> int:
             logger.info(f"[INFO] YouTube動画ID: {video_id}")
             logger.info(f"[INFO] 動画URL: https://www.youtube.com/watch?v={video_id}")
         else:
-            logger.info(f"[INFO] 動画ファイル: {video_path}（ドライランのため投稿なし）")
+            logger.info(f"[INFO] 動画確認パス: {Path(video_path).resolve()}")
+            logger.info("[INFO] ★ ドライランのため YouTube には投稿していません ★")
         logger.info("[INFO] NAR地方競馬 YouTube Shorts 自動投稿 完了")
         logger.info("=" * 60)
         return 0
 
     except Exception as e:
         logger.error(f"[ERROR] 実行中にエラーが発生しました: {e}", exc_info=True)
-        # エラー時も一時ファイルをクリーンアップ
-        cleanup_temp_files(audio_path)
+        # エラー時は音声のみ削除（動画は中途半端でも残して原因調査に使える）
+        if not dry_run:
+            cleanup_temp_files(audio_path)
         return 1
 
 
