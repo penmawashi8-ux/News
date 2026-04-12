@@ -228,6 +228,17 @@ def _fetch_news_article(url: str) -> dict[str, Any] | None:
     """
     JRAニュース記事URLから本文を取得する。
 
+    記事構造:
+      <p class="date">2026年4月5日</p>
+      <h1>開催競馬場・今日の出来事（4月5日（日曜））</h1>
+      <div class="news_body">
+        <h3 class="block_header_line">第3回中山第4日（...）</h3>
+        <h4 class="lv5">競走除外</h4>
+        <h5 class="lv6">4R</h5>
+        <p>2番　オンクラウドナイン（石神　深一騎手）<br>馬場入場後に...</p>
+        ...
+      </div>
+
     Args:
         url: 記事URL
 
@@ -240,36 +251,51 @@ def _fetch_news_article(url: str) -> dict[str, Any] | None:
 
     soup = BeautifulSoup(html, "lxml")
 
-    # タイトル取得
+    # タイトル: <h1> を優先
     title = ""
-    for tag in ["h1", "h2", "title"]:
-        el = soup.find(tag)
-        if el:
-            title = el.get_text(strip=True)
-            # <title>タグの場合「JRA - ○○」形式を整形
-            title = re.sub(r"^(JRA\s*[-－|｜]\s*|日本中央競馬会\s*[-－|｜]\s*)", "", title)
-            if title:
-                break
-
-    # 本文取得（最初の意味ある段落）
-    summary = ""
-    main_area = soup.find(["article", "main", "div"], class_=re.compile(r"content|article|news|body", re.I))
-    if not main_area:
-        main_area = soup
-    for p in main_area.find_all("p"):
-        text = p.get_text(strip=True)
-        if len(text) > 20:
-            summary = text[:200]
-            break
-
-    today_str = _today_jst().strftime("%Y年%m月%d日")
+    h1 = soup.find("h1")
+    if h1:
+        title = h1.get_text(strip=True)
+    if not title:
+        title_tag = soup.find("title")
+        if title_tag:
+            title = re.sub(r"[\s　]*JRA$", "", title_tag.get_text(strip=True)).strip()
+            title = re.sub(r"^(JRA\s*[-－|｜]\s*)", "", title)
 
     if not title:
         return None
 
+    # 日付: <p class="date"> を優先
+    date_str = _today_jst().strftime("%Y年%m月%d日")
+    date_el = soup.find("p", class_="date")
+    if date_el:
+        date_str = date_el.get_text(strip=True)
+
+    # 本文: <div class="news_body"> 内の見出し・段落を順に連結
+    summary = ""
+    news_body = soup.find("div", class_="news_body")
+    if news_body:
+        parts = []
+        for el in news_body.find_all(["h3", "h4", "h5", "p"]):
+            # display_none ブロック内の不要な h2 を除外
+            if el.find_parent(class_="display_none"):
+                continue
+            text = el.get_text(separator=" ", strip=True)
+            if text:
+                parts.append(text)
+        summary = "　".join(parts)[:400]
+
+    # フォールバック: 最初の意味ある <p>
+    if not summary:
+        for p in soup.find_all("p"):
+            text = p.get_text(strip=True)
+            if len(text) > 20:
+                summary = text[:200]
+                break
+
     return {
         "title": title[:100],
-        "date": today_str,
+        "date": date_str,
         "summary": summary,
     }
 
