@@ -67,7 +67,7 @@ jobs:
   post-jra-shorts:
     name: JRA Shorts 生成・投稿
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       # ========== リポジトリのチェックアウト ==========
