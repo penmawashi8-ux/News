@@ -121,15 +121,18 @@ jobs:
       - name: VOICEVOX の起動を待機
         if: ${{ github.event.inputs.scrape_only != 'true' }}
         run: |
-          echo "VOICEVOX の起動を最大60秒待機..."
-          for i in $(seq 1 12); do
+          echo "VOICEVOX の起動を最大3分待機..."
+          for i in $(seq 1 36); do
             if curl -s http://localhost:50021/version > /dev/null 2>&1; then
-              echo "VOICEVOX 起動確認完了"
-              break
+              echo "VOICEVOX 起動確認完了 (${i}回目)"
+              exit 0
             fi
-            echo "待機中... ($i/12)"
+            echo "待機中... ($i/36)"
             sleep 5
           done
+          echo "::error::VOICEVOX が3分以内に起動しませんでした"
+          docker logs voicevox || true
+          exit 1
 
       # ========== JRA スクレイプ確認（scrape_only=true） ==========
       - name: JRA スクレイプ確認（テキスト出力）
