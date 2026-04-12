@@ -120,9 +120,13 @@ def _run_scrape_only(date_str: str, date_filename: str) -> int:
         lines.append("--- 制裁情報 ---")
         if sanctions:
             for s in sanctions:
+                horse = s.get("horse", "")
+                jockey_horse = s.get("jockey", "（不明）")
+                if horse:
+                    jockey_horse += f"（{horse}）"
                 lines.append(
                     f"  [{s.get('venue', '')} {s.get('race', '')}]"
-                    f" 騎手: {s.get('jockey', '（不明）')}"
+                    f" 騎手: {jockey_horse}"
                     f" / 制裁: {s.get('content', '')}"
                 )
                 if s.get("reason"):
@@ -131,12 +135,12 @@ def _run_scrape_only(date_str: str, date_filename: str) -> int:
             lines.append("  （制裁情報なし）")
 
         lines.append("")
-        lines.append("--- ニュース ---")
+        lines.append("--- ニュース（今日の出来事）---")
         if news:
             for n in news:
                 lines.append(f"  [{n.get('date', '')}] {n.get('title', '')}")
                 if n.get("summary"):
-                    lines.append(f"    {n['summary'][:200]}")
+                    lines.append(f"    {n['summary']}")  # 文字数制限なし
         else:
             lines.append("  （ニュースなし）")
 
@@ -163,8 +167,12 @@ def _run_scrape_only(date_str: str, date_filename: str) -> int:
         if sanctions:
             for s in sanctions:
                 venue_race = f"{s.get('venue', '')} {s.get('race', '')}".strip()
+                horse = s.get("horse", "")
+                jockey_horse = s.get("jockey", "（不明）")
+                if horse:
+                    jockey_horse += f"（{horse}）"
                 md_lines.append(
-                    f"- **{venue_race}** / 騎手: {s.get('jockey', '（不明）')}"
+                    f"- **{venue_race}** / 騎手: {jockey_horse}"
                     f" / 制裁: {s.get('content', '')}"
                 )
                 if s.get("reason"):
@@ -172,12 +180,12 @@ def _run_scrape_only(date_str: str, date_filename: str) -> int:
         else:
             md_lines.append("- （制裁情報なし）")
 
-        md_lines += ["", "### ニュース"]
+        md_lines += ["", "### ニュース（今日の出来事）"]
         if news:
             for n in news:
                 md_lines.append(f"- **{n.get('title', '')}** ({n.get('date', '')})")
                 if n.get("summary"):
-                    md_lines.append(f"  {n['summary'][:150]}")
+                    md_lines.append(f"  {n['summary']}")  # 文字数制限なし
         else:
             md_lines.append("- （ニュースなし）")
 

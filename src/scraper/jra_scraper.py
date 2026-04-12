@@ -143,9 +143,17 @@ def _parse_sanction_article(url: str, today: datetime) -> list[dict[str, Any]]:
         if not fields:
             continue
 
+        # 騎手フィールドから馬名を分離
+        # 例: "M.ディー（ビップヴォルフ）" → jockey="M.ディー", horse="ビップヴォルフ"
+        jockey_raw = fields.get("騎手", "")
+        horse_match = re.search(r"（(.+?)）", jockey_raw)
+        horse = horse_match.group(1) if horse_match else ""
+        jockey = re.sub(r"（.+?）", "", jockey_raw).strip()
+
         result.append({
             "date": date_str,
-            "jockey": fields.get("騎手", ""),
+            "jockey": jockey,
+            "horse": horse,
             "content": fields.get("制裁", ""),
             "reason": fields.get("短評", fields.get("対象馬", fields.get("加害馬", ""))),
             "race": race_name,
@@ -271,26 +279,26 @@ def _fetch_news_article(url: str) -> dict[str, Any] | None:
     if date_el:
         date_str = date_el.get_text(strip=True)
 
-    # 本文: <div class="news_body"> 内の見出し・段落を順に連結
+    # 本文: <div class="news_body"> 内の見出し・段落を順に連結（文字数制限なし）
     summary = ""
     news_body = soup.find("div", class_="news_body")
     if news_body:
         parts = []
         for el in news_body.find_all(["h3", "h4", "h5", "p"]):
-            # display_none ブロック内の不要な h2 を除外
+            # display_none ブロック内の不要な要素を除外
             if el.find_parent(class_="display_none"):
                 continue
             text = el.get_text(separator=" ", strip=True)
             if text:
                 parts.append(text)
-        summary = "　".join(parts)[:400]
+        summary = "　".join(parts)
 
     # フォールバック: 最初の意味ある <p>
     if not summary:
         for p in soup.find_all("p"):
             text = p.get_text(strip=True)
             if len(text) > 20:
-                summary = text[:200]
+                summary = text
                 break
 
     return {
@@ -302,41 +310,49 @@ def _fetch_news_article(url: str) -> dict[str, Any] | None:
 
 def get_news() -> list[dict[str, Any]]:
     """
-    JRAニュースを取得する。
-    当日のニュース記事URLをindexから発見し、各記事を個別に取得する。
+    JRAニュースのうち「開催競馬場・今日の出来事」記事のみを取得する。
+
+    当日のニュースindexから「今日の出来事」タイトルを持つURLを抽出し、
+    各記事の全文を取得して返す。
 
     Returns:
         [{"title": "...", "date": "...", "summary": "..."}]
         取得失敗・該当なしは空リスト。
     """
-    logger.info("[INFO] JRAニュース取得開始")
+    logger.info("[INFO] JRAニュース（今日の出来事）取得開始")
     news_list = []
 
     # ① 当日記事URLをindexから探す
     article_urls = _find_today_news_urls()
 
-    # ② 各記事の本文を取得
-    for url in article_urls[:5]:  # 最大5件
+    # ② 「今日の出来事」を含む記事のみ対象にする
+    # タイトルで絞り込むため、一度フェッチしてチェック
+    for url in article_urls[:10]:
         article = _fetch_news_article(url)
-        if article:
+        if not article:
+            continue
+        if "今日の出来事" in article["title"]:
             news_list.append(article)
-            logger.info(f"[INFO] 記事取得: {article['title'][:50]}")
+            logger.info(f"[INFO] 今日の出来事記事取得: {article['title'][:60]}")
+        else:
+            logger.info(f"[INFO] スキップ（今日の出来事以外）: {article['title'][:50]}")
 
     # ③ indexから見つからない場合: URL推測でフォールバック
     if not news_list:
-        logger.warning("[WARNING] indexから当日記事が見つからず、URL推測でフォールバック")
+        logger.warning("[WARNING] indexから今日の出来事が見つからず、URL推測でフォールバック")
         today = _today_jst()
         base = f"{JRA_NEWS_BASE}/news/{today.strftime('%Y%m')}/{today.strftime('%m%d')}"
-        for seq in range(1, 8):  # 01〜07まで試す
+        for seq in range(1, 10):
             url = f"{base}{seq:02d}.html"
             article = _fetch_news_article(url)
-            if article:
+            if article and "今日の出来事" in article["title"]:
                 news_list.append(article)
-                logger.info(f"[INFO] URL推測で記事取得: {url}")
-            elif seq == 1:
+                logger.info(f"[INFO] URL推測で今日の出来事取得: {url}")
+                break  # 「今日の出来事」は1記事のみ想定
+            elif not article and seq == 1:
                 break  # 01が404なら連番なし
 
-    logger.info(f"[INFO] JRAニュース {len(news_list)}件取得")
+    logger.info(f"[INFO] JRAニュース（今日の出来事）{len(news_list)}件取得")
     return news_list
 
 
