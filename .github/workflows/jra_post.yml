@@ -15,10 +15,21 @@ on:
   # 手動実行（GitHub Actionsの "Run workflow" ボタンから）
   workflow_dispatch:
     inputs:
+      scrape_only:
+        description: |
+          スクレイプ確認モード
+          true  → スクレイピング＋AI原稿のみ。Step Summary にテキスト出力★動作確認はこちら
+          false → 通常モード（dry_run 設定に従う）
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
       dry_run:
         description: |
-          ドライランモード
-          true  → 動画を生成して Artifacts に保存（YouTube投稿なし）★確認中はこちら
+          ドライランモード（scrape_only=false のときのみ有効）
+          true  → 動画を生成して Artifacts に保存（YouTube投稿なし）
           false → YouTube に実際に投稿する
         required: false
         default: 'true'
@@ -62,18 +73,19 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      # ========== システム依存パッケージのインストール ==========
+      # ========== システム依存パッケージのインストール（scrape_only 以外） ==========
       - name: FFmpeg インストール
+        if: ${{ github.event.inputs.scrape_only != 'true' }}
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg fonts-noto-cjk
           ffmpeg -version
 
-      # ========== NotoSansJP フォントの配置 ==========
+      # ========== NotoSansJP フォントの配置（scrape_only 以外） ==========
       - name: フォントファイルの配置
+        if: ${{ github.event.inputs.scrape_only != 'true' }}
         run: |
           mkdir -p assets/fonts
-          # システムにインストールされたNotoフォントをコピー
           FONT_SRC=$(fc-list | grep -i "NotoSansCJK\|NotoSansJP\|noto.*bold" | head -1 | cut -d: -f1)
           if [ -n "$FONT_SRC" ]; then
             cp "$FONT_SRC" assets/fonts/NotoSansJP-Bold.ttf
@@ -82,8 +94,9 @@ jobs:
             echo "NotoSans フォントが見つかりません。デフォルトフォントを使用します。"
           fi
 
-      # ========== VOICEVOX エンジン起動（Docker） ==========
+      # ========== VOICEVOX エンジン起動（scrape_only 以外） ==========
       - name: VOICEVOX エンジン起動
+        if: ${{ github.event.inputs.scrape_only != 'true' }}
         run: |
           docker pull voicevox/voicevox_engine:cpu-ubuntu20.04-latest
           docker run -d \
@@ -96,8 +109,9 @@ jobs:
       - name: Python パッケージインストール
         run: pip install -r requirements.txt
 
-      # ========== VOICEVOX の起動待ち ==========
+      # ========== VOICEVOX の起動待ち（scrape_only 以外） ==========
       - name: VOICEVOX の起動を待機
+        if: ${{ github.event.inputs.scrape_only != 'true' }}
         run: |
           echo "VOICEVOX の起動を最大60秒待機..."
           for i in $(seq 1 12); do
@@ -109,17 +123,26 @@ jobs:
             sleep 5
           done
 
-      # ========== JRA動画生成・投稿 ==========
-      - name: JRA YouTube Shorts 生成・投稿
+      # ========== JRA スクレイプ確認（scrape_only=true） ==========
+      - name: JRA スクレイプ確認（テキスト出力）
+        if: ${{ github.event.inputs.scrape_only == 'true' }}
         env:
-          # Gemini API Key（AI原稿生成・無料枠）
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          # Anthropic API Key（オプション・どちらか一方でOK）
+        run: |
+          FORCE_FLAG=""
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            FORCE_FLAG="--force"
+          fi
+          python main_jra.py --scrape-only $FORCE_FLAG
+
+      # ========== JRA動画生成・投稿（scrape_only 以外） ==========
+      - name: JRA YouTube Shorts 生成・投稿
+        if: ${{ github.event.inputs.scrape_only != 'true' }}
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          # YouTube 認証ファイル（Base64エンコード済み）
           YOUTUBE_CLIENT_SECRETS: ${{ secrets.YOUTUBE_CLIENT_SECRETS }}
           YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
-          # VOICEVOX 設定
           VOICEVOX_URL: http://localhost:50021
           VOICEVOX_SPEAKER_ID: 3
         run: |
@@ -133,20 +156,29 @@ jobs:
           fi
           python main_jra.py $FORCE_FLAG $DRY_RUN_FLAG
 
+      # ========== スクレイプ結果テキストをアーティファクト保存 ==========
+      - name: スクレイプ結果をアーティファクトとして保存
+        if: ${{ github.event.inputs.scrape_only == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: jra-scrape-result-${{ github.run_number }}
+          path: output/*.txt
+          retention-days: 7
+          if-no-files-found: warn
+
       # ========== 動画をアーティファクトとして保存（ドライランのみ） ==========
-      # Actions の "Artifacts" タブからダウンロードして動画を確認できる
       - name: 生成動画をアーティファクトとして保存
-        if: ${{ github.event.inputs.dry_run != 'false' }}
+        if: ${{ github.event.inputs.scrape_only != 'true' && github.event.inputs.dry_run != 'false' }}
         uses: actions/upload-artifact@v4
         with:
           name: jra-preview-video-${{ github.run_number }}
           path: output/*.mp4
-          retention-days: 7     # 7日間ダウンロード可能
+          retention-days: 7
           if-no-files-found: warn
 
-      # ========== VOICEVOX コンテナの停止 ==========
+      # ========== VOICEVOX コンテナの停止（scrape_only 以外） ==========
       - name: VOICEVOX コンテナの停止
-        if: always()
+        if: ${{ always() && github.event.inputs.scrape_only != 'true' }}
         run: docker stop voicevox && docker rm voicevox || true
 
       # ========== エラー時のログ保存 ==========
