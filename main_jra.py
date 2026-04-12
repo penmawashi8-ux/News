@@ -71,6 +71,20 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def write_step_summary(content: str) -> None:
+    """
+    GitHub Actions の Step Summary にマークダウンを書き出す。
+    ローカル実行時は何もしない。
+
+    Args:
+        content: マークダウン形式のテキスト
+    """
+    summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+    if summary_path:
+        with open(summary_path, "a", encoding="utf-8") as f:
+            f.write(content + "\n")
+
+
 def cleanup_temp_files(*file_paths: str) -> None:
     """
     一時ファイルを削除する。
@@ -197,10 +211,38 @@ def main() -> int:
             logger.info("[INFO] ★ ドライランのため YouTube には投稿していません ★")
         logger.info("[INFO] JRA YouTube Shorts 自動投稿 完了")
         logger.info("=" * 60)
+
+        # GitHub Actions Step Summary に結果を書き出す
+        if not dry_run:
+            write_step_summary(
+                f"## ✅ JRA Shorts 投稿完了\n\n"
+                f"| 項目 | 値 |\n|------|----|\n"
+                f"| 日付 | {date_str} |\n"
+                f"| 制裁情報 | {len(sanctions)}件 |\n"
+                f"| ニュース | {len(news)}件 |\n"
+                f"| 原稿文字数 | {len(script)}文字 |\n"
+                f"| 動画URL | https://www.youtube.com/watch?v={video_id} |\n"
+            )
+        else:
+            write_step_summary(
+                f"## ✅ JRA Shorts 動画生成完了（ドライラン）\n\n"
+                f"| 項目 | 値 |\n|------|----|\n"
+                f"| 日付 | {date_str} |\n"
+                f"| 制裁情報 | {len(sanctions)}件 |\n"
+                f"| ニュース | {len(news)}件 |\n"
+                f"| 原稿文字数 | {len(script)}文字 |\n\n"
+                f"生成した動画は **Artifacts** からダウンロードして確認してください。\n"
+            )
         return 0
 
     except Exception as e:
         logger.error(f"[ERROR] 実行中にエラーが発生しました: {e}", exc_info=True)
+        # GitHub Actions Step Summary にエラーを書き出す
+        write_step_summary(
+            f"## ❌ JRA Shorts 生成失敗\n\n"
+            f"```\n{e}\n```\n\n"
+            f"詳細はログを確認してください。\n"
+        )
         # エラー時は音声のみ削除（動画は中途半端でも残して原因調査に使える）
         if not dry_run:
             cleanup_temp_files(audio_path)

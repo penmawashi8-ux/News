@@ -171,6 +171,13 @@ def get_news() -> list[dict[str, Any]]:
         today.strftime("%Y.%m.%d"),
     ]
 
+    # ナビゲーション・フッター要素として除外するキーワード
+    NAV_BLACKLIST = {
+        "ニュース", "お問い合わせ", "FAQ", "トップ", "ホーム", "サイトマップ",
+        "プライバシーポリシー", "利用規約", "アクセス", "リンク", "検索",
+        "メニュー", "ログイン", "会員", "採用", "English", "TOP",
+    }
+
     try:
         # ニュース記事要素を探す（ul/li 形式や article 形式）
         news_items = soup.find_all(["li", "article", "div"], class_=lambda c: c and (
@@ -181,10 +188,16 @@ def get_news() -> list[dict[str, Any]]:
         if not news_items:
             news_items = soup.select("ul li, .news-list li, .newsList li")
 
-        for item in news_items[:20]:  # 上限20件チェック
+        for item in news_items[:30]:  # 上限30件チェック
             title_tag = item.find(["a", "h2", "h3", "p"])
             title = title_tag.get_text(strip=True) if title_tag else item.get_text(strip=True)
             if not title:
+                continue
+
+            # ナビ要素・短すぎるタイトルを除外
+            if title in NAV_BLACKLIST or len(title) < 10:
+                continue
+            if any(ng in title for ng in ["お問い合わせ", "FAQ", "利用規約", "プライバシー"]):
                 continue
 
             # 日付の取得
@@ -193,7 +206,6 @@ def get_news() -> list[dict[str, Any]]:
             if date_tag:
                 date_text = date_tag.get_text(strip=True)
             else:
-                # テキスト内の日付パターンを探す
                 item_text = item.get_text()
                 for pattern in today_patterns:
                     if pattern in item_text:
@@ -205,9 +217,9 @@ def get_news() -> list[dict[str, Any]]:
             summary = summary_tag.get_text(strip=True) if summary_tag else ""
 
             news_list.append({
-                "title": title[:100],   # タイトルは100文字以内
+                "title": title[:100],
                 "date": date_text,
-                "summary": summary[:200],  # サマリーは200文字以内
+                "summary": summary[:200],
             })
 
         # 本日分を優先（日付が今日のものを先頭に）

@@ -347,13 +347,18 @@ def _build_ffmpeg_command(
     video_stream = "[bg]"
 
     # 字幕焼き込み（SRTファイルを使用）
+    # ※ fontfile は force_style 非対応のため fontsdir を別パラメータで指定する
     srt_path_escaped = srt_path.replace("\\", "/").replace(":", "\\:")
-    font_option = f":fontfile='{font_path}'" if font_path else ""
+    if font_path and Path(font_path).exists():
+        font_dir = str(Path(font_path).parent).replace("\\", "/")
+        fontsdir_option = f":fontsdir='{font_dir}'"
+    else:
+        fontsdir_option = ""
     filter_parts.append(
         f"{video_stream}subtitles='{srt_path_escaped}'"
+        f"{fontsdir_option}"
         f":force_style='FontSize={FONT_SIZE},PrimaryColour=&HFFFFFF,OutlineColour=&H000000,"
-        f"BorderStyle=1,Outline={BORDER_WIDTH},Bold=1,Alignment=2,MarginV=320'"
-        f"{font_option}[vout]"
+        f"BorderStyle=1,Outline={BORDER_WIDTH},Bold=1,Alignment=2,MarginV=320'[vout]"
     )
     video_stream = "[vout]"
 

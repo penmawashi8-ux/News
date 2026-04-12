@@ -21,8 +21,14 @@ logger = get_logger(__name__)
 
 JST = pytz.timezone("Asia/Tokyo")
 
-# Gemini モデル（無料枠: 1日1500リクエスト）
-GEMINI_MODEL = "gemini-1.5-flash"
+# Gemini モデル候補（先頭から順に試す）
+# gemini-1.5-flash は2026年時点で廃止済みのため新モデルを優先
+GEMINI_MODELS = [
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-flash-002",
+]
 
 # Anthropic モデル（フォールバック用）
 ANTHROPIC_MODEL = "claude-sonnet-4-20250514"
@@ -93,14 +99,26 @@ def _generate_with_gemini(prompt: str) -> str | None:
         import google.generativeai as genai
 
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(
-            model_name=GEMINI_MODEL,
-            system_instruction=SYSTEM_PROMPT,
-        )
-        response = model.generate_content(prompt)
-        text = response.text.strip()
-        logger.info(f"[INFO] Gemini で原稿生成完了 ({len(text)}文字)")
-        return text
+
+        # 利用可能なモデルを順番に試す
+        last_error = None
+        for model_name in GEMINI_MODELS:
+            try:
+                model = genai.GenerativeModel(
+                    model_name=model_name,
+                    system_instruction=SYSTEM_PROMPT,
+                )
+                response = model.generate_content(prompt)
+                text = response.text.strip()
+                logger.info(f"[INFO] Gemini ({model_name}) で原稿生成完了 ({len(text)}文字)")
+                return text
+            except Exception as e:
+                logger.warning(f"[WARNING] Gemini モデル {model_name} 失敗: {e}")
+                last_error = e
+                continue
+
+        logger.error(f"[ERROR] 全Geminiモデルが失敗: {last_error}")
+        return None
 
     except ImportError:
         logger.error("[ERROR] google-generativeai パッケージが未インストールです: pip install google-generativeai")
