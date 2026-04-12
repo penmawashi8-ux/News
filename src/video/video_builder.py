@@ -29,8 +29,10 @@ VIDEO_FPS = 30
 
 # 字幕設定
 FONT_SIZE = 52
-SUBTITLE_Y = 1600           # 字幕表示Y座標（下部）
-SUBTITLE_MAX_CHARS = 18     # 1行あたり最大文字数
+LINE_HEIGHT = 66                 # 行間隔（フォントサイズ＋余白）
+SUBTITLE_BLOCK_CENTER_Y = 960   # 字幕ブロック中心Y座標（画面縦中央）
+SUBTITLE_MAX_CHARS = 18         # 1行あたり最大文字数
+SUBTITLE_LINES_PER_CUT = 5     # 1カットの最大行数
 BORDER_WIDTH = 3
 
 # BGM音量（0.0〜1.0）
@@ -130,27 +132,104 @@ def _resolve_font_path() -> str:
     return ""
 
 
-def _wrap_text_for_subtitle(text: str, max_chars: int = SUBTITLE_MAX_CHARS) -> list[str]:
+def _make_subtitle_cuts(text: str) -> list[dict]:
     """
-    テキストを字幕表示用に折り返す。
-    句点・感嘆符・改行で区切り、各行をmax_chars文字以内に収める。
+    テキストを字幕カット単位に分割する。
 
-    Args:
-        text: 原稿テキスト全文
-        max_chars: 1行の最大文字数
+    AIナレーション原稿は全角スペース（　）で意味単位を区切っている。
+    その区切りを優先し、1カット最大 SUBTITLE_LINES_PER_CUT 行に収める。
+    意味単位が途中で切れないようにし、溢れる場合は次のカットへ。
 
     Returns:
-        折り返した行のリスト
+        [{"lines": [str, ...], "chars": int}, ...]
+        chars はそのカットの文字数（表示時間の配分比率に使用）
     """
-    lines = []
-    sentences = text.replace("。", "。\n").replace("！", "！\n").replace("？", "？\n")
-    for sentence in sentences.splitlines():
-        sentence = sentence.strip()
-        if not sentence:
+    # 全角スペースで意味単位を分割（AIナレーションの区切り）
+    # 全角スペースがない場合は通常の半角スペースも試みる
+    if "\u3000" in text:
+        units = [u.strip() for u in text.split("\u3000") if u.strip()]
+    else:
+        units = [text.strip()]
+
+    cuts: list[dict] = []
+    current_lines: list[str] = []
+    current_chars = 0
+
+    for unit in units:
+        wrapped = textwrap.wrap(unit, width=SUBTITLE_MAX_CHARS)
+        if not wrapped:
             continue
-        wrapped = textwrap.wrap(sentence, width=max_chars)
-        lines.extend(wrapped)
-    return lines
+
+        # この意味単位を追加すると行数上限を超える → 現カットを確定して次へ
+        if current_lines and len(current_lines) + len(wrapped) > SUBTITLE_LINES_PER_CUT:
+            cuts.append({"lines": current_lines, "chars": current_chars})
+            current_lines = []
+            current_chars = 0
+
+        # 1意味単位だけで行数上限を超える場合は SUBTITLE_LINES_PER_CUT 行ずつ分割
+        while len(wrapped) > SUBTITLE_LINES_PER_CUT:
+            chunk = wrapped[:SUBTITLE_LINES_PER_CUT]
+            cuts.append({"lines": chunk, "chars": sum(len(l) for l in chunk)})
+            wrapped = wrapped[SUBTITLE_LINES_PER_CUT:]
+
+        current_lines.extend(wrapped)
+        current_chars += len(unit)
+
+    if current_lines:
+        cuts.append({"lines": current_lines, "chars": current_chars})
+
+    return cuts
+
+
+def _build_subtitle_drawtexts(
+    cuts: list[dict],
+    total_duration: float,
+    font_path: str,
+) -> list[str]:
+    """
+    字幕カットリストから drawtext フィルター文字列のリストを生成する。
+
+    各カットは複数行を縦に並べて中央に表示する。
+    表示時間は文字数に比例して配分する。
+
+    Returns:
+        drawtext フィルター文字列のリスト
+    """
+    font_param = f":fontfile='{font_path}'" if font_path else ""
+    total_chars = sum(c["chars"] for c in cuts) or 1
+
+    filters: list[str] = []
+    elapsed = 0.0
+
+    for cut in cuts:
+        lines = cut["lines"]
+        chars = cut["chars"]
+        cut_duration = (chars / total_chars) * total_duration
+        start_t = elapsed
+        end_t = elapsed + cut_duration
+        elapsed = end_t
+
+        # 複数行をブロックとして縦中央揃え
+        n_lines = len(lines)
+        block_height = n_lines * LINE_HEIGHT
+        block_start_y = SUBTITLE_BLOCK_CENTER_Y - block_height // 2
+
+        for j, line in enumerate(lines):
+            y = block_start_y + j * LINE_HEIGHT
+            escaped = _escape_drawtext(line)
+            filters.append(
+                f"drawtext=text='{escaped}'"
+                f"{font_param}"
+                f":fontsize={FONT_SIZE}"
+                f":fontcolor=white"
+                f":borderw={BORDER_WIDTH}"
+                f":bordercolor=black"
+                f":x=(w-text_w)/2"
+                f":y={y}"
+                f":enable='between(t,{start_t:.3f},{end_t:.3f})'"
+            )
+
+    return filters
 
 
 def _escape_drawtext(text: str) -> str:
@@ -225,14 +304,14 @@ def build_video(
     bgm_path = _get_bgm_path()
     font_path = _resolve_font_path()
 
-    subtitle_lines = _wrap_text_for_subtitle(script_text)
-    logger.info(f"[INFO] 字幕行数: {len(subtitle_lines)}, フォント: {font_path or '未設定'}")
+    subtitle_cuts = _make_subtitle_cuts(script_text)
+    logger.info(f"[INFO] 字幕カット数: {len(subtitle_cuts)}, フォント: {font_path or '未設定'}")
 
     ffmpeg_cmd = _build_ffmpeg_command(
         audio_path=audio_path,
         bg_path=bg_path,
         bgm_path=bgm_path,
-        subtitle_lines=subtitle_lines,
+        subtitle_cuts=subtitle_cuts,
         output_path=output_path,
         duration=audio_duration,
         font_path=font_path,
@@ -259,7 +338,7 @@ def _build_ffmpeg_command(
     audio_path: str,
     bg_path: str | None,
     bgm_path: str | None,
-    subtitle_lines: list[str],
+    subtitle_cuts: list[dict],
     output_path: str,
     duration: float,
     font_path: str,
@@ -267,14 +346,14 @@ def _build_ffmpeg_command(
     """
     FFmpegコマンドを構築して返す。
 
-    字幕は drawtext フィルターを使って各行を時間ベースで表示する。
-    subtitles フィルターは使わない（フォント指定の互換性問題を回避）。
+    字幕は drawtext フィルターを使ってカット単位（4-5行ブロック）で表示する。
+    各カットは句点・感嘆符の区切りで切り替わる。
 
     Args:
         audio_path: ナレーション音声パス
         bg_path: 背景画像パス（Noneの場合は黒背景）
         bgm_path: BGM音声パス（Noneの場合はBGMなし）
-        subtitle_lines: 字幕行のリスト
+        subtitle_cuts: _make_subtitle_cuts() の戻り値
         output_path: 出力mp4パス
         duration: 動画の長さ（秒）
         font_path: フォントファイルパス（空文字の場合はデフォルト）
@@ -310,37 +389,13 @@ def _build_ffmpeg_command(
     )
     video_stream = "[bg]"
 
-    # ========== drawtext 字幕フィルター ==========
-    # 各行を均等な時間で表示する
-    if subtitle_lines and duration > 0:
-        time_per_line = duration / len(subtitle_lines)
-        font_param = f":fontfile='{font_path}'" if font_path else ""
-
-        # 各字幕行を drawtext で順番に表示
-        drawtext_filters = []
-        for i, line in enumerate(subtitle_lines):
-            start_t = i * time_per_line
-            end_t = (i + 1) * time_per_line
-            escaped = _escape_drawtext(line)
-
-            drawtext_filters.append(
-                f"drawtext=text='{escaped}'"
-                f"{font_param}"
-                f":fontsize={FONT_SIZE}"
-                f":fontcolor=white"
-                f":borderw={BORDER_WIDTH}"
-                f":bordercolor=black"
-                f":x=(w-text_w)/2"          # 横中央揃え
-                f":y={SUBTITLE_Y}"
-                f":enable='between(t,{start_t:.3f},{end_t:.3f})'"
-            )
-
-        # drawtext をチェーンでつなぐ（[bg] → drawtext1 → drawtext2 → ... → [vout]）
+    # ========== drawtext 字幕フィルター（カット単位・複数行ブロック）==========
+    if subtitle_cuts and duration > 0:
+        drawtext_filters = _build_subtitle_drawtexts(subtitle_cuts, duration, font_path)
         all_drawtext = ",".join(drawtext_filters)
         filter_parts.append(f"{video_stream}{all_drawtext}[vout]")
         video_stream = "[vout]"
     else:
-        # 字幕なし: そのまま出力
         filter_parts.append(f"{video_stream}copy[vout]")
         video_stream = "[vout]"
 

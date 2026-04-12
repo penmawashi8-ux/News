@@ -18,10 +18,10 @@ on:
       scrape_only:
         description: |
           スクレイプ確認モード
-          true  → スクレイピング＋AI原稿のみ。Step Summary にテキスト出力★動作確認はこちら
-          false → 通常モード（dry_run 設定に従う）
+          true  → スクレイピング＋AI原稿のみ。Step Summary にテキスト出力
+          false → 動画生成モード（dry_run 設定に従う）★動画テストはこちら
         required: false
-        default: 'true'
+        default: 'false'
         type: choice
         options:
           - 'true'
