@@ -59,88 +59,128 @@ def _get_html(url: str) -> str | None:
 # 制裁情報: jockey-sanction.com
 # ──────────────────────────────────────────
 
+def _find_today_sanction_urls() -> list[str]:
+    """
+    jockey-sanction.com トップページのRecentPostsウィジェットから
+    当日の制裁記事URLを探して返す。
+
+    記事タイトル例: "中山2026年4月12日制裁事象"
+
+    Returns:
+        当日制裁記事URLのリスト
+    """
+    today = _today_jst()
+    # 例: "2026年4月12日"（月・日はゼロ埋めなし）
+    today_str_ja = f"{today.year}年{today.month}月{today.day}日"
+
+    html = _get_html(SANCTION_URL)
+    if html is None:
+        return []
+
+    soup = BeautifulSoup(html, "lxml")
+    urls = []
+
+    for a in soup.find_all("a", href=True):
+        link_text = a.get_text(strip=True)
+        if today_str_ja in link_text and "制裁" in link_text:
+            url = a["href"]
+            if url not in urls:
+                urls.append(url)
+
+    logger.info(f"[INFO] 当日制裁記事URL {len(urls)}件: {urls}")
+    return urls
+
+
+def _parse_sanction_article(url: str, today: datetime) -> list[dict[str, Any]]:
+    """
+    jockey-sanction.com の制裁記事URLを取得し、
+    <table class="sanction"> を解析して制裁情報リストを返す。
+
+    テーブル構造:
+      <th class="sanction">中山5R</th>          ← レース名
+      <td class="title">騎手</td>
+      <td class="contents">M.ディー（ビップヴォルフ）</td>
+      <td class="title">制裁</td>
+      <td class="contents">最後の直線コースでの鞭の使用について戒告</td>
+      ...
+
+    Returns:
+        [{"date": ..., "jockey": ..., "content": ..., "reason": ..., "race": ..., "venue": ...}]
+    """
+    html = _get_html(url)
+    if html is None:
+        return []
+
+    soup = BeautifulSoup(html, "lxml")
+    result = []
+
+    # 記事タイトルから開催場所を取得（例: "中山2026年4月12日制裁事象" → "中山"）
+    venue = ""
+    title_el = soup.find("h1", class_="entry-title")
+    if title_el:
+        title_text = title_el.get_text(strip=True)
+        venue = re.sub(r"\d{4}年.*", "", title_text)
+
+    date_str = today.strftime("%Y年%m月%d日")
+
+    for table in soup.find_all("table", class_="sanction"):
+        # レース名: <th class="sanction">中山5R</th>
+        race_name = ""
+        th = table.find("th", class_="sanction")
+        if th:
+            race_name = th.get_text(strip=True)
+
+        # td.title → td.contents のペアからフィールドを収集
+        fields: dict[str, str] = {}
+        for row in table.find_all("tr"):
+            title_td = row.find("td", class_="title")
+            contents_td = row.find("td", class_="contents")
+            if title_td and contents_td:
+                key = title_td.get_text(strip=True)
+                val = contents_td.get_text(strip=True)
+                fields[key] = val
+
+        if not fields:
+            continue
+
+        result.append({
+            "date": date_str,
+            "jockey": fields.get("騎手", ""),
+            "content": fields.get("制裁", ""),
+            "reason": fields.get("短評", fields.get("対象馬", fields.get("加害馬", ""))),
+            "race": race_name,
+            "venue": venue,
+        })
+
+    logger.info(f"[INFO] 制裁記事パース完了: {url} → {len(result)}件")
+    return result
+
+
 def get_sanctions() -> list[dict[str, Any]]:
     """
     jockey-sanction.com から当日分の制裁情報を取得する。
 
+    手順:
+      1. トップページのRecentPostsウィジェットから今日の記事URLを探す
+      2. 各URLの <table class="sanction"> を解析する
+
     Returns:
-        [{"date": "...", "jockey": "...", "content": "...", "reason": "..."}]
+        [{"date": "...", "jockey": "...", "content": "...", "reason": "...",
+          "race": "...", "venue": "..."}]
         取得失敗・該当なしは空リスト。
     """
     logger.info(f"[INFO] JRA制裁情報取得開始: {SANCTION_URL}")
-    sanctions = []
     today = _today_jst()
 
-    # 当日を示す文字列パターン
-    today_patterns = [
-        today.strftime("%Y年%m月%d日"),
-        today.strftime("%Y/%m/%d"),
-        today.strftime("%Y-%m-%d"),
-        today.strftime("%-m月%-d日"),
-        today.strftime("%m/%d"),
-    ]
-
-    html = _get_html(SANCTION_URL)
-    if html is None:
-        return sanctions
-
-    soup = BeautifulSoup(html, "lxml")
-
-    try:
-        # ── テーブル形式を優先して探す ──
-        for table in soup.find_all("table"):
-            rows = table.find_all("tr")
-            header_cells = [th.get_text(strip=True) for th in rows[0].find_all(["th", "td"])] if rows else []
-
-            for row in rows[1:]:  # ヘッダー行をスキップ
-                cells = row.find_all(["td", "th"])
-                if not cells:
-                    continue
-                row_text = " ".join(c.get_text(strip=True) for c in cells)
-
-                # 当日のみ、または全件（日付列が見つからない場合）
-                is_today = any(p in row_text for p in today_patterns)
-
-                if len(cells) >= 2:
-                    sanctions.append({
-                        "date": cells[0].get_text(strip=True),
-                        "jockey": cells[1].get_text(strip=True) if len(cells) > 1 else "",
-                        "content": cells[2].get_text(strip=True) if len(cells) > 2 else row_text,
-                        "reason": cells[3].get_text(strip=True) if len(cells) > 3 else "",
-                        "_is_today": is_today,
-                    })
-
-        # 当日分がある場合は当日のみに絞る
-        today_s = [s for s in sanctions if s.pop("_is_today", False)]
-        if today_s:
-            sanctions = today_s
-        else:
-            # 当日分が特定できない場合: 直近5件を残す
-            for s in sanctions:
-                s.pop("_is_today", None)
-            sanctions = sanctions[:5]
-
-        # ── テーブルで取れない場合: 記事/リスト形式 ──
-        if not sanctions:
-            for item in soup.find_all(["article", "li", "div"]):
-                text = item.get_text(strip=True)
-                if len(text) < 15:
-                    continue
-                # 制裁関連キーワードを含む要素のみ
-                if not any(kw in text for kw in ["制裁", "騎乗停止", "過怠金", "戒告", "注意"]):
-                    continue
-                sanctions.append({
-                    "date": today.strftime("%Y年%m月%d日"),
-                    "jockey": "",
-                    "content": text[:150],
-                    "reason": "",
-                })
-                if len(sanctions) >= 5:
-                    break
-
-    except Exception as e:
-        logger.error(f"[ERROR] 制裁情報パース失敗: {e}")
+    article_urls = _find_today_sanction_urls()
+    if not article_urls:
+        today_str_ja = f"{today.year}年{today.month}月{today.day}日"
+        logger.warning(f"[WARNING] 当日({today_str_ja})の制裁記事が見つかりませんでした")
         return []
+
+    sanctions: list[dict[str, Any]] = []
+    for url in article_urls:
+        sanctions.extend(_parse_sanction_article(url, today))
 
     logger.info(f"[INFO] JRA制裁情報 {len(sanctions)}件取得")
     return sanctions

@@ -51,6 +51,10 @@ def _format_sanctions(sanctions: list[dict[str, Any]]) -> str:
     lines = []
     for s in sanctions[:5]:
         parts = []
+        if s.get("venue") and s.get("race"):
+            parts.append(f"場所:{s['venue']} {s['race']}")
+        elif s.get("race"):
+            parts.append(f"レース:{s['race']}")
         if s.get("date"):
             parts.append(f"日付:{s['date']}")
         if s.get("jockey"):
