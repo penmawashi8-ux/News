@@ -71,8 +71,8 @@ def _format_sanctions(sanctions: list[dict[str, Any]]) -> str:
 
 def _format_news(news: list[dict[str, Any]]) -> str:
     """
-    ニュース（今日の出来事）をプロンプト用テキストに変換する。
-    summary はフル文字列をそのまま渡す。
+    ニュース（今日の出来事）をAIプロンプト用テキストに変換する。
+    summary は長すぎる場合1500文字に収める。
     """
     if not news:
         return "（ニュースなし）"
@@ -80,7 +80,7 @@ def _format_news(news: list[dict[str, Any]]) -> str:
     for n in news[:2]:
         summary = n.get("summary", "")
         if summary:
-            lines.append(summary)
+            lines.append(summary[:1500])
     return "\n".join(lines) if lines else "（ニュースなし）"
 
 
@@ -191,7 +191,11 @@ def _call_ai(prompt: str) -> str | None:
         if result:
             return result
 
-    logger.warning("[WARNING] AI API キーが未設定のためフォールバックテンプレートを使用します")
+    logger.warning(
+        "[WARNING] AI API が利用できないためフォールバックテンプレートを使用します "
+        f"(GEMINI_API_KEY={'設定済' if os.getenv('GEMINI_API_KEY') else '未設定'}, "
+        f"ANTHROPIC_API_KEY={'設定済' if os.getenv('ANTHROPIC_API_KEY') else '未設定'})"
+    )
     return None
 
 
@@ -232,8 +236,10 @@ def generate_jra_script(
 
     result = _call_ai(prompt)
     if result:
+        logger.info("[INFO] AI原稿生成成功")
         return result
 
+    logger.warning("[WARNING] AI生成失敗 → フォールバック原稿を使用")
     return _fallback_jra_script(today, sanctions, news)
 
 
@@ -275,21 +281,67 @@ def _fallback_jra_script(
     sanctions: list[dict[str, Any]],
     news: list[dict[str, Any]],
 ) -> str:
-    """AI生成失敗時のJRAフォールバック原稿"""
-    sanction_part = (
-        f"本日の制裁情報です。{sanctions[0]['jockey']}騎手に{sanctions[0]['content'][:30]}の制裁が科されました。"
-        if sanctions else "本日、制裁情報はありませんでした。"
-    )
-    news_part = (
-        "　".join(f"{n['title'][:30]}。" for n in news[:2])
-        if news else "本日も競馬場でレースが行われました。"
-    )
-    return (
-        f"本日のJRA情報をお届けします！"
-        f"　{sanction_part}"
-        f"　続いて本日のニュースです。{news_part}"
-        f"　以上、本日のJRA情報でした！チャンネル登録よろしく！"
-    )
+    """
+    AI生成失敗時のJRAフォールバック原稿。
+    全制裁を競馬場ごとにまとめ、ニュースからキーワードで要点を抽出する。
+    """
+    from collections import defaultdict
+
+    parts = ["本日のJRA情報をお届けします！"]
+
+    # ── 制裁情報（全件・競馬場ごとにまとめ）──
+    if sanctions:
+        by_venue: dict[str, list] = defaultdict(list)
+        for s in sanctions:
+            by_venue[s.get("venue", "不明")].append(s)
+
+        sanction_lines = ["本日の制裁情報です。"]
+        for venue, items in list(by_venue.items())[:3]:
+            first = items[0]
+            jockey = first.get("jockey", "")
+            horse = first.get("horse", "")
+            race = first.get("race", "")
+            content = first.get("content", "")[:20]
+            horse_str = f"（{horse}）" if horse else ""
+            if len(items) == 1:
+                sanction_lines.append(
+                    f"{venue}{race}で{jockey}騎手{horse_str}に{content}の制裁。"
+                )
+            else:
+                sanction_lines.append(
+                    f"{venue}では{jockey}騎手{horse_str}など{len(items)}件の制裁。"
+                )
+        parts.append("　".join(sanction_lines))
+    else:
+        parts.append("本日、制裁情報はありませんでした。")
+
+    # ── 今日の出来事（ニュースから要点抽出）──
+    if news:
+        summary = news[0].get("summary", "")
+        highlights = []
+
+        # 記録達成・GⅠ結果を優先抽出
+        for kw in ["勝達成", "通算1,", "通算1000", "史上", "GⅠ", "賞（G"]:
+            idx = summary.find(kw)
+            if idx >= 0:
+                start = max(0, idx - 15)
+                end = min(len(summary), idx + 60)
+                snippet = summary[start:end].replace("　", "").strip()
+                # 重複除去
+                if not any(snippet[:15] in h for h in highlights):
+                    highlights.append(snippet)
+
+        if highlights:
+            parts.append("続いて本日の出来事です。" + "。".join(h.rstrip("。") for h in highlights[:3]) + "。")
+        elif summary:
+            parts.append(f"続いて本日の出来事です。{summary[:120]}")
+        else:
+            parts.append("本日も競馬場でレースが行われました。")
+    else:
+        parts.append("本日も競馬場でレースが行われました。")
+
+    parts.append("以上、本日のJRA情報でした！チャンネル登録よろしく！")
+    return "　".join(parts)
 
 
 def _fallback_nar_script(
@@ -298,20 +350,35 @@ def _fallback_nar_script(
     news: list[dict[str, Any]],
 ) -> str:
     """AI生成失敗時のNARフォールバック原稿"""
-    sanction_part = (
-        f"本日の制裁情報です。{sanctions[0]['content'][:40]}。"
-        if sanctions else "本日、制裁情報はありませんでした。"
-    )
-    news_part = (
-        "　".join(f"{n['title'][:30]}。" for n in news[:2])
-        if news else "本日も全国の競馬場でレースが行われました。"
-    )
-    return (
-        f"本日の地方競馬情報をお届けします！"
-        f"　{sanction_part}"
-        f"　続いて本日のトピックです。{news_part}"
-        f"　以上、本日の地方競馬情報でした！チャンネル登録よろしく！"
-    )
+    from collections import defaultdict
+
+    parts = ["本日の地方競馬情報をお届けします！"]
+
+    if sanctions:
+        by_venue: dict[str, list] = defaultdict(list)
+        for s in sanctions:
+            by_venue[s.get("venue", "不明")].append(s)
+        sanction_lines = ["本日の制裁情報です。"]
+        for venue, items in list(by_venue.items())[:3]:
+            first = items[0]
+            jockey = first.get("jockey", "")
+            content = first.get("content", "")[:20]
+            if len(items) == 1:
+                sanction_lines.append(f"{venue}で{jockey}騎手に{content}の制裁。")
+            else:
+                sanction_lines.append(f"{venue}では{jockey}騎手など{len(items)}件の制裁。")
+        parts.append("　".join(sanction_lines))
+    else:
+        parts.append("本日、制裁情報はありませんでした。")
+
+    if news:
+        summary = news[0].get("summary", "")
+        parts.append(f"続いて本日のトピックです。{summary[:120]}" if summary else "本日も全国の競馬場でレースが行われました。")
+    else:
+        parts.append("本日も全国の競馬場でレースが行われました。")
+
+    parts.append("以上、本日の地方競馬情報でした！チャンネル登録よろしく！")
+    return "　".join(parts)
 
 
 if __name__ == "__main__":
