@@ -71,8 +71,7 @@ def _format_sanctions(sanctions: list[dict[str, Any]]) -> str:
 
 def _format_news(news: list[dict[str, Any]]) -> str:
     """
-    ニュース（今日の出来事）をAIプロンプト用テキストに変換する。
-    summary は長すぎる場合1500文字に収める。
+    ニュース（今日の出来事）をAIプロンプト用テキストに変換する（文字数制限なし）。
     """
     if not news:
         return "（ニュースなし）"
@@ -80,7 +79,7 @@ def _format_news(news: list[dict[str, Any]]) -> str:
     for n in news[:2]:
         summary = n.get("summary", "")
         if summary:
-            lines.append(summary[:1500])
+            lines.append(summary)
     return "\n".join(lines) if lines else "（ニュースなし）"
 
 

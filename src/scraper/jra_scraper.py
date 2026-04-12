@@ -141,6 +141,9 @@ def _parse_sanction_article(url: str, today: datetime) -> list[dict[str, Any]]:
         th = table.find("th", class_="sanction")
         if th:
             race_name = th.get_text(strip=True)
+            # レース名に競馬場名が含まれている場合は除去（例: "中山5R" → "5R"）
+            if venue and race_name.startswith(venue):
+                race_name = race_name[len(venue):]
 
         # td.title → td.contents のペアからフィールドを収集
         fields: dict[str, str] = {}
