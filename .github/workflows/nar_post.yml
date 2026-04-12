@@ -110,7 +110,9 @@ jobs:
       # ========== NAR動画生成・投稿 ==========
       - name: NAR YouTube Shorts 生成・投稿
         env:
-          # Anthropic API Key（AI原稿生成）
+          # Gemini API Key（AI原稿生成・無料枠）
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Anthropic API Key（オプション・どちらか一方でOK）
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # YouTube 認証ファイル（Base64エンコード済み）
           YOUTUBE_CLIENT_SECRETS: ${{ secrets.YOUTUBE_CLIENT_SECRETS }}

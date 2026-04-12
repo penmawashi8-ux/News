@@ -5,8 +5,9 @@ requests==2.31.0
 beautifulsoup4==4.12.3
 lxml==5.2.2
 
-# AI原稿生成
-anthropic==0.28.0
+# AI原稿生成（どちらか一方のAPIキーがあれば動作）
+google-generativeai==0.7.2   # Gemini API（無料枠あり・推奨）
+anthropic==0.28.0             # Anthropic Claude（有料・オプション）
 
 # YouTube API
 google-api-python-client==2.131.0
