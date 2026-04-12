@@ -71,15 +71,35 @@ def _format_sanctions(sanctions: list[dict[str, Any]]) -> str:
 
 def _format_news(news: list[dict[str, Any]]) -> str:
     """
-    ニュース（今日の出来事）をAIプロンプト用テキストに変換する（文字数制限なし）。
+    ニュース（今日の出来事）をAIプロンプト用テキストに変換する。
+    構造化イベントがあればイベント単位で整形し、AIが全件を読み上げやすくする。
     """
     if not news:
         return "（ニュースなし）"
+
     lines = []
     for n in news[:2]:
-        summary = n.get("summary", "")
-        if summary:
-            lines.append(summary)
+        events: list[dict[str, str]] = n.get("events", [])
+        if events:
+            current_section = ""
+            for ev in events:
+                section = ev.get("section", "")
+                if section and section != current_section:
+                    lines.append(f"\n■ {section}")
+                    current_section = section
+                title = ev.get("title", "")
+                race = ev.get("race", "")
+                body = ev.get("body", "")
+                race_str = f"（{race}）" if race else ""
+                lines.append(f"【{title}】{race_str}")
+                if body:
+                    lines.append(body)
+        else:
+            # 構造化データなし: rawサマリーを使用
+            summary = n.get("summary", "")
+            if summary:
+                lines.append(summary)
+
     return "\n".join(lines) if lines else "（ニュースなし）"
 
 
@@ -462,27 +482,23 @@ def _fallback_jra_sanctions_script(today: str, sanctions: list[dict[str, Any]]) 
 
 
 def _fallback_jra_news_script(today: str, news: list[dict[str, Any]]) -> str:
-    """AI生成失敗時のニュース専用フォールバック原稿。"""
+    """AI生成失敗時のニュース専用フォールバック原稿。構造化イベントを使って全件読み上げ。"""
     parts = ["本日のJRA今日の出来事をお届けします！"]
 
     if news:
-        summary = news[0].get("summary", "")
-        highlights = []
-        for kw in ["勝達成", "通算1,", "通算1000", "史上", "GⅠ", "賞（G"]:
-            idx = summary.find(kw)
-            if idx >= 0:
-                start = max(0, idx - 15)
-                end = min(len(summary), idx + 60)
-                snippet = summary[start:end].replace("　", "").strip()
-                if not any(snippet[:15] in h for h in highlights):
-                    highlights.append(snippet)
-
-        if highlights:
-            parts.append("本日の出来事です。" + "。".join(h.rstrip("。") for h in highlights[:3]) + "。")
-        elif summary:
-            parts.append(f"本日の出来事です。{summary[:150]}")
+        events: list[dict[str, str]] = news[0].get("events", [])
+        if events:
+            parts.append("本日の出来事です。")
+            for ev in events:
+                title = ev.get("title", "")
+                race = ev.get("race", "")
+                body = ev.get("body", "")
+                race_str = f"{race}で" if race else ""
+                body_short = body[:60] if body else ""
+                parts.append(f"{race_str}{title}。{body_short}")
         else:
-            parts.append("本日の詳細な出来事は説明欄をご確認ください。")
+            summary = news[0].get("summary", "")
+            parts.append(f"本日の出来事です。{summary[:150]}" if summary else "本日の詳細な出来事は説明欄をご確認ください。")
     else:
         parts.append("本日の出来事情報は取得できませんでした。")
 

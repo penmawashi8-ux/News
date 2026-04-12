@@ -294,19 +294,55 @@ def _fetch_news_article(url: str) -> dict[str, Any] | None:
     if date_el:
         date_str = date_el.get_text(strip=True)
 
-    # 本文: <div class="news_body"> 内の見出し・段落を順に連結（文字数制限なし）
+    # 本文: <div class="news_body"> 内をイベント単位に構造化して取得
     summary = ""
+    events: list[dict[str, str]] = []
     news_body = soup.find("div", class_="news_body")
     if news_body:
-        parts = []
+        raw_parts: list[str] = []
+        current_section = ""
+        current_event: dict[str, str] = {}
+
         for el in news_body.find_all(["h3", "h4", "h5", "p"]):
-            # display_none ブロック内の不要な要素を除外
             if el.find_parent(class_="display_none"):
                 continue
             text = el.get_text(separator=" ", strip=True)
-            if text:
-                parts.append(text)
-        summary = "　".join(parts)
+            if not text:
+                continue
+
+            raw_parts.append(text)
+
+            tag = el.name
+            if tag == "h3":
+                # 開催場所・日程セクション（例: 「第3回中山第4日」）
+                current_section = text
+                if current_event:
+                    events.append(current_event)
+                    current_event = {}
+            elif tag == "h4":
+                # イベントタイトル（例: 「競走除外」「横山武史騎手JRA通算800勝達成！」）
+                if current_event:
+                    events.append(current_event)
+                current_event = {
+                    "section": current_section,
+                    "title": text,
+                    "race": "",
+                    "body": "",
+                }
+            elif tag == "h5":
+                # レース番号（例: 「4R」）
+                if current_event:
+                    current_event["race"] = text
+            elif tag == "p":
+                # 本文
+                if current_event:
+                    sep = " " if current_event["body"] else ""
+                    current_event["body"] = current_event["body"] + sep + text
+
+        if current_event:
+            events.append(current_event)
+
+        summary = "　".join(raw_parts)
 
     # フォールバック: 最初の意味ある <p>
     if not summary:
@@ -320,6 +356,7 @@ def _fetch_news_article(url: str) -> dict[str, Any] | None:
         "title": title[:100],
         "date": date_str,
         "summary": summary,
+        "events": events,
     }
 
 
