@@ -250,6 +250,16 @@ def build_jra_title(date_str: str) -> str:
     return f"【{date_str}】本日のJRA制裁情報＆ニュース #Shorts"
 
 
+def build_jra_sanctions_title(date_str: str) -> str:
+    """JRA制裁情報動画のタイトルを生成する"""
+    return f"【{date_str}】本日のJRA制裁情報まとめ #Shorts"
+
+
+def build_jra_news_title(date_str: str) -> str:
+    """JRA今日の出来事動画のタイトルを生成する"""
+    return f"【{date_str}】本日のJRA今日の出来事 #Shorts"
+
+
 def build_nar_title(date_str: str) -> str:
     """
     NAR動画のタイトルを生成する。
@@ -273,6 +283,26 @@ def build_jra_description(script: str) -> str:
     )
 
 
+def build_jra_sanctions_description(script: str) -> str:
+    """JRA制裁情報動画の説明文を生成する"""
+    return (
+        f"{script}\n\n"
+        "#競馬 #JRA #制裁情報 #騎手 #Shorts\n\n"
+        "毎週土日・祝日の22時にJRA最新情報をお届けします！\n"
+        "チャンネル登録・高評価よろしくお願いします！"
+    )
+
+
+def build_jra_news_description(script: str) -> str:
+    """JRA今日の出来事動画の説明文を生成する"""
+    return (
+        f"{script}\n\n"
+        "#競馬 #JRA #今日の出来事 #競馬ニュース #Shorts\n\n"
+        "毎週土日・祝日の22時にJRA最新情報をお届けします！\n"
+        "チャンネル登録・高評価よろしくお願いします！"
+    )
+
+
 def build_nar_description(script: str) -> str:
     """NAR動画の説明文を生成する"""
     return (
@@ -284,6 +314,8 @@ def build_nar_description(script: str) -> str:
 
 
 JRA_TAGS = ["競馬", "JRA", "制裁情報", "競馬ニュース", "Shorts", "ショート", "日本中央競馬会"]
+JRA_SANCTIONS_TAGS = ["競馬", "JRA", "制裁情報", "騎手", "Shorts", "ショート", "日本中央競馬会"]
+JRA_NEWS_TAGS = ["競馬", "JRA", "今日の出来事", "競馬ニュース", "Shorts", "ショート", "日本中央競馬会"]
 NAR_TAGS = ["競馬", "地方競馬", "NAR", "制裁情報", "競馬ニュース", "Shorts", "ショート", "地方競馬全国協会"]
 
 

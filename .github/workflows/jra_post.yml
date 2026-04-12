@@ -45,6 +45,14 @@ on:
         options:
           - 'true'
           - 'false'
+      test_date:
+        description: |
+          テスト日付（YYYYMMDD 形式）
+          入力するとスクレイピングの基準日をその日付に固定する（例: 20260412）
+          空欄の場合は実行日を使用する
+        required: false
+        default: ''
+        type: string
 
 # ========================================
 # 権限設定
@@ -128,6 +136,7 @@ jobs:
         if: ${{ github.event.inputs.scrape_only == 'true' }}
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TEST_DATE: ${{ github.event.inputs.test_date }}
         run: |
           FORCE_FLAG=""
           if [ "${{ github.event.inputs.force }}" = "true" ]; then
@@ -145,6 +154,7 @@ jobs:
           YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
           VOICEVOX_URL: http://localhost:50021
           VOICEVOX_SPEAKER_ID: 3
+          TEST_DATE: ${{ github.event.inputs.test_date }}
         run: |
           FORCE_FLAG=""
           if [ "${{ github.event.inputs.force }}" = "true" ]; then

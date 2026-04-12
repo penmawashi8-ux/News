@@ -6,6 +6,7 @@ JRAスクレイパー
 注意: 各サイトの利用規約を遵守し、アクセス間隔を1秒以上空けています。
 """
 
+import os
 import re
 import time
 from datetime import datetime
@@ -40,6 +41,17 @@ REQUEST_INTERVAL = 1.0
 
 
 def _today_jst() -> datetime:
+    """
+    現在のJST日時を返す。
+    環境変数 TEST_DATE=YYYYMMDD が設定されている場合はその日付を使用する（テスト用）。
+    """
+    test_date = os.getenv("TEST_DATE")
+    if test_date:
+        try:
+            dt = datetime.strptime(test_date, "%Y%m%d")
+            return JST.localize(dt)
+        except ValueError:
+            logger.warning(f"[WARNING] TEST_DATE の形式が不正です（YYYYMMDD 形式で指定）: {test_date}")
     return datetime.now(JST)
 
 
