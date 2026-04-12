@@ -1,0 +1,24 @@
+# 競馬YouTube Shorts自動投稿システム 依存パッケージ
+
+# スクレイピング
+requests==2.31.0
+beautifulsoup4==4.12.3
+lxml==5.2.2
+
+# AI原稿生成
+anthropic==0.28.0
+
+# YouTube API
+google-api-python-client==2.131.0
+google-auth-httplib2==0.2.0
+google-auth-oauthlib==1.2.0
+
+# 音声生成（フォールバック用）
+pyttsx3==2.90
+
+# 動画処理（FFmpegはシステムインストール）
+Pillow==10.3.0
+
+# ユーティリティ
+python-dotenv==1.0.1
+pytz==2024.1
