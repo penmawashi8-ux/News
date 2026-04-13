@@ -481,27 +481,30 @@ def _fallback_jra_sanctions_script(today: str, sanctions: list[dict[str, Any]]) 
 
 
 def _fallback_jra_news_script(today: str, news: list[dict[str, Any]]) -> str:
-    """AI生成失敗時のニュース専用フォールバック原稿。構造化イベントを使って全件読み上げ。"""
+    """AI生成失敗時のニュース専用フォールバック原稿。
+    各イベントに「N件目、」番号を付け、全角スペースはイベント間のみに使用する。
+    """
     parts = ["本日のJRA今日の出来事をお届けします！"]
 
     if news:
         events: list[dict[str, str]] = news[0].get("events", [])
         if events:
-            parts.append("本日の出来事です。")
-            for ev in events:
+            for i, ev in enumerate(events, 1):
                 title = ev.get("title", "")
                 race = ev.get("race", "")
-                body = ev.get("body", "")
+                # body内の全角スペースを半角に変換（名前内空白などがカット境界と混同されないよう）
+                body = ev.get("body", "").replace("\u3000", " ")
                 race_str = f"{race}で" if race else ""
-                body_short = body[:60] if body else ""
-                parts.append(f"{race_str}{title}。{body_short}")
+                body_short = body[:80] if body else ""
+                parts.append(f"{i}件目、{race_str}{title}。{body_short}")
         else:
-            summary = news[0].get("summary", "")
+            summary = news[0].get("summary", "").replace("\u3000", " ")
             parts.append(f"本日の出来事です。{summary[:150]}" if summary else "本日の詳細な出来事は説明欄をご確認ください。")
     else:
         parts.append("本日の出来事情報は取得できませんでした。")
 
     parts.append("以上、本日のJRA情報でした！チャンネル登録よろしく！")
+    # 全角スペースはイベント間の区切りのみに使用 → 動画の字幕カット境界として機能する
     return "　".join(parts)
 
 

@@ -337,7 +337,10 @@ def _fetch_news_article(url: str) -> dict[str, Any] | None:
                 # 本文
                 if current_event:
                     sep = " " if current_event["body"] else ""
-                    current_event["body"] = current_event["body"] + sep + text
+                    # 全角スペースを半角に変換（名前内の空白など）
+                    # 全角スペースはイベント間の区切り文字として使うため、本文内に含めない
+                    text_clean = text.replace("\u3000", " ")
+                    current_event["body"] = current_event["body"] + sep + text_clean
 
         if current_event:
             events.append(current_event)
