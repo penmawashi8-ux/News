@@ -45,12 +45,11 @@ from src.uploader.youtube_uploader import (
     build_jra_news_title,
     build_jra_sanctions_description,
     build_jra_sanctions_title,
-    upload_thumbnail,
     upload_video,
 )
 from src.utils.calendar import is_jra_race_day
 from src.utils.logger import get_logger
-from src.video.video_builder import build_video, generate_thumbnail_image
+from src.video.video_builder import build_video
 
 # 環境変数を読み込む（.envファイルがあれば）
 load_dotenv()
@@ -352,11 +351,6 @@ def main() -> int:
                 )
                 temp_files.append(video_path)
 
-                # サムネイル画像生成
-                thumb_path = str(OUTPUT_DIR / f"jra_sanctions_{venue_fn}_{date_filename}_thumb.png")
-                generate_thumbnail_image(date_str, venue, "制裁情報", thumb_path)
-                temp_files.append(thumb_path)
-
                 video_id = None
                 if not dry_run:
                     logger.info(f"[INFO] Step 6a: 制裁情報動画 YouTube投稿 ({venue})")
@@ -367,7 +361,6 @@ def main() -> int:
                         tags=JRA_SANCTIONS_TAGS,
                     )
                     logger.info(f"[INFO] 制裁動画({venue}) 投稿完了: https://www.youtube.com/watch?v={video_id}")
-                    upload_thumbnail(video_id, thumb_path)
 
                 sanctions_results.append((venue, video_path, video_id))
         else:
@@ -403,11 +396,6 @@ def main() -> int:
                 )
                 temp_files.append(video_path)
 
-                # サムネイル画像生成
-                thumb_path = str(OUTPUT_DIR / f"jra_news_{venue_fn}_{date_filename}_thumb.png")
-                generate_thumbnail_image(date_str, venue, "今日の出来事", thumb_path)
-                temp_files.append(thumb_path)
-
                 video_id = None
                 if not dry_run:
                     logger.info(f"[INFO] Step 6b: ニュース動画 YouTube投稿 ({venue})")
@@ -418,7 +406,6 @@ def main() -> int:
                         tags=JRA_NEWS_TAGS,
                     )
                     logger.info(f"[INFO] ニュース動画({venue}) 投稿完了: https://www.youtube.com/watch?v={video_id}")
-                    upload_thumbnail(video_id, thumb_path)
 
                 news_results.append((venue, video_path, video_id))
         else:
