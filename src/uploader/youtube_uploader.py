@@ -250,14 +250,16 @@ def build_jra_title(date_str: str) -> str:
     return f"【{date_str}】本日のJRA制裁情報＆ニュース #Shorts"
 
 
-def build_jra_sanctions_title(date_str: str) -> str:
+def build_jra_sanctions_title(date_str: str, venue: str = "") -> str:
     """JRA制裁情報動画のタイトルを生成する"""
-    return f"【{date_str}】本日のJRA制裁情報まとめ #Shorts"
+    venue_str = f" {venue}" if venue else ""
+    return f"【{date_str}{venue_str}】本日のJRA制裁情報まとめ #Shorts"
 
 
-def build_jra_news_title(date_str: str) -> str:
+def build_jra_news_title(date_str: str, venue: str = "") -> str:
     """JRA今日の出来事動画のタイトルを生成する"""
-    return f"【{date_str}】本日のJRA今日の出来事 #Shorts"
+    venue_str = f" {venue}" if venue else ""
+    return f"【{date_str}{venue_str}】本日のJRA今日の出来事 #Shorts"
 
 
 def build_nar_title(date_str: str) -> str:

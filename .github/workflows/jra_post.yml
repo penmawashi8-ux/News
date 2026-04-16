@@ -32,11 +32,11 @@ on:
           true  → 動画を生成して Artifacts に保存（YouTube投稿なし）
           false → YouTube に実際に投稿する
         required: false
-        default: 'true'
+        default: 'false'
         type: choice
         options:
-          - 'true'
           - 'false'
+          - 'true'
       force:
         description: '開催日判定をスキップして強制実行（テスト時は true 推奨）'
         required: false

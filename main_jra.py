@@ -4,12 +4,13 @@ JRA YouTube Shorts 自動投稿 エントリーポイント
 実行フロー:
   1. JRA開催日判定 → 開催なしなら終了
   2. JRAスクレイピング（制裁情報 + ニュース）
-  3. AI原稿生成
-  4. VOICEVOX音声生成
-  5. 動画生成
-  6. YouTube投稿（--dry-runでなければ）
-  7. 一時ファイル削除（ドライランモードでは音声・動画ファイルを保持）
-  8. 結果サマリーをログ出力
+  3. 競馬場ごとにグループ化
+  4. AI原稿生成（競馬場単位）
+  5. VOICEVOX音声生成（セグメント別・タイミング情報付き）
+  6. 動画生成
+  7. YouTube投稿（--dry-runでなければ）
+  8. 一時ファイル削除
+  9. 結果サマリー出力
 
 使用方法:
   python main_jra.py                      # 通常実行（YouTube投稿あり）
@@ -60,6 +61,9 @@ JST = pytz.timezone("Asia/Tokyo")
 # 出力ディレクトリ
 OUTPUT_DIR = Path("output")
 
+# 競馬場名リスト（venue抽出に使用）
+JRA_VENUE_NAMES = ["札幌", "函館", "福島", "新潟", "中山", "東京", "中京", "京都", "阪神", "小倉"]
+
 
 def parse_args() -> argparse.Namespace:
     """コマンドライン引数をパースする"""
@@ -88,9 +92,6 @@ def write_step_summary(content: str) -> None:
     """
     GitHub Actions の Step Summary にマークダウンを書き出す。
     ローカル実行時は何もしない。
-
-    Args:
-        content: マークダウン形式のテキスト
     """
     summary_path = os.getenv("GITHUB_STEP_SUMMARY")
     if summary_path:
@@ -98,14 +99,52 @@ def write_step_summary(content: str) -> None:
             f.write(content + "\n")
 
 
+def _get_event_venue(event: dict) -> str:
+    """イベントデータから競馬場名を抽出する。section → race → title の順で探す。"""
+    for field in ("section", "race", "title"):
+        text = event.get(field, "")
+        for venue in JRA_VENUE_NAMES:
+            if venue in text:
+                return venue
+    return "その他"
+
+
+def _group_sanctions_by_venue(sanctions: list[dict]) -> dict[str, list[dict]]:
+    """制裁情報を競馬場ごとにグループ化する（出現順を保持）。"""
+    result: dict[str, list[dict]] = {}
+    for s in sanctions:
+        venue = s.get("venue") or "その他"
+        result.setdefault(venue, []).append(s)
+    return result
+
+
+def _group_news_by_venue(news: list[dict]) -> dict[str, list[dict]]:
+    """
+    ニュース記事のイベントを競馬場ごとにグループ化する。
+    Returns: {venue: [合成ニュース記事]}  ← generate_jra_news_script に渡せる形式
+    """
+    events_by_venue: dict[str, list[dict]] = {}
+    for article in news:
+        for event in article.get("events", []):
+            venue = _get_event_venue(event)
+            events_by_venue.setdefault(venue, []).append(event)
+
+    return {
+        venue: [{"title": f"{venue} 今日の出来事", "date": "", "summary": "", "events": events}]
+        for venue, events in events_by_venue.items()
+    }
+
+
+def _safe_filename_venue(venue: str) -> str:
+    """競馬場名をファイル名に使える形に変換する。"""
+    return venue.replace("/", "_").replace("\\", "_").replace(" ", "_")
+
+
 def _run_scrape_only(date_str: str, date_filename: str) -> int:
     """
     スクレイプ確認モード。
     スクレイピング + AI原稿生成のみ実行し、結果をテキストファイルと
     GitHub Step Summary に出力する。音声・動画・YouTube投稿は行わない。
-
-    Returns:
-        終了コード（0: 成功、1: エラー）
     """
     logger.info("[INFO] ===== スクレイプ確認モード =====")
 
@@ -115,16 +154,14 @@ def _run_scrape_only(date_str: str, date_filename: str) -> int:
         news = get_news()
         logger.info(f"[INFO] 制裁情報: {len(sanctions)}件, ニュース: {len(news)}件")
 
+        sanctions_by_venue = _group_sanctions_by_venue(sanctions)
+        news_by_venue = _group_news_by_venue(news)
+
         logger.info("[INFO] Step 3: AI原稿生成開始")
-        sanctions_script = generate_jra_sanctions_script(sanctions) if sanctions else "（制裁情報なし）"
-        news_script = generate_jra_news_script(news) if news else "（ニュースなし）"
-        logger.info(f"[INFO] 制裁原稿生成完了（{len(sanctions_script)}文字）")
-        logger.info(f"[INFO] ニュース原稿生成完了（{len(news_script)}文字）")
 
-        # ---- テキスト整形 ----
-        lines = []
-        lines.append(f"=== JRA スクレイプ結果 ({date_str}) ===\n")
+        lines = [f"=== JRA スクレイプ結果 ({date_str}) ===\n"]
 
+        # 制裁情報
         lines.append("--- 制裁情報 ---")
         if sanctions:
             for s in sanctions:
@@ -152,29 +189,36 @@ def _run_scrape_only(date_str: str, date_filename: str) -> int:
         else:
             lines.append("  （ニュースなし）")
 
+        # 制裁原稿（競馬場ごと）
         lines.append("")
         lines.append("--- AI生成原稿（制裁情報動画）---")
-        lines.append(sanctions_script)
+        if sanctions_by_venue:
+            for venue, venue_sanctions in sanctions_by_venue.items():
+                script = generate_jra_sanctions_script(venue_sanctions)
+                lines.append(f"\n【{venue}】{script}")
+        else:
+            lines.append("（制裁情報なし）")
+
+        # ニュース原稿（競馬場ごと）
         lines.append("")
         lines.append("--- AI生成原稿（ニュース動画）---")
-        lines.append(news_script)
+        if news_by_venue:
+            for venue, venue_news in news_by_venue.items():
+                script = generate_jra_news_script(venue_news)
+                lines.append(f"\n【{venue}】{script}")
+        else:
+            lines.append("（ニュースなし）")
 
         text_output = "\n".join(lines)
 
-        # ---- ファイル出力 ----
         OUTPUT_DIR.mkdir(exist_ok=True)
         out_path = OUTPUT_DIR / f"jra_scrape_{date_filename}.txt"
         out_path.write_text(text_output, encoding="utf-8")
         logger.info(f"[INFO] テキスト出力: {out_path.resolve()}")
-
-        # ---- コンソール出力 ----
         print("\n" + text_output)
 
-        # ---- GitHub Step Summary ----
-        md_lines = [
-            f"## JRA スクレイプ確認結果 ({date_str})\n",
-            "### 制裁情報",
-        ]
+        # GitHub Step Summary
+        md_lines = [f"## JRA スクレイプ確認結果 ({date_str})\n", "### 制裁情報"]
         if sanctions:
             for s in sanctions:
                 venue_race = f"{s.get('venue', '')} {s.get('race', '')}".strip()
@@ -186,8 +230,6 @@ def _run_scrape_only(date_str: str, date_filename: str) -> int:
                     f"- **{venue_race}** / 騎手: {jockey_horse}"
                     f" / 制裁: {s.get('content', '')}"
                 )
-                if s.get("reason"):
-                    md_lines.append(f"  - 短評: {s['reason']}")
         else:
             md_lines.append("- （制裁情報なし）")
 
@@ -195,25 +237,10 @@ def _run_scrape_only(date_str: str, date_filename: str) -> int:
         if news:
             for n in news:
                 md_lines.append(f"- **{n.get('title', '')}** ({n.get('date', '')})")
-                if n.get("summary"):
-                    md_lines.append(f"  {n['summary']}")
         else:
             md_lines.append("- （ニュースなし）")
 
-        md_lines += [
-            "",
-            "### AI生成原稿（制裁情報動画）",
-            "```",
-            sanctions_script,
-            "```",
-            "",
-            "### AI生成原稿（ニュース動画）",
-            "```",
-            news_script,
-            "```",
-        ]
         write_step_summary("\n".join(md_lines))
-
         logger.info("[INFO] スクレイプ確認モード 完了")
         return 0
 
@@ -224,12 +251,7 @@ def _run_scrape_only(date_str: str, date_filename: str) -> int:
 
 
 def cleanup_temp_files(*file_paths: str) -> None:
-    """
-    一時ファイルを削除する。
-
-    Args:
-        *file_paths: 削除するファイルパスのリスト
-    """
+    """一時ファイルを削除する。"""
     for path in file_paths:
         if path and Path(path).exists():
             try:
@@ -257,7 +279,6 @@ def main() -> int:
     logger.info(f"[INFO] モード: {'スクレイプ確認' if args.scrape_only else 'ドライラン' if args.dry_run else '本番'}")
     logger.info("=" * 60)
 
-    # ドライランは環境変数でも指定可能
     dry_run = args.dry_run or os.getenv("DRY_RUN", "false").lower() == "true"
 
     # ========== Step 0: VOICEVOXユーザー辞書登録 ==========
@@ -277,7 +298,6 @@ def main() -> int:
     if args.scrape_only:
         return _run_scrape_only(date_str, date_filename)
 
-    # 生成ファイルを追跡（後処理用）
     temp_files: list[str] = []
 
     try:
@@ -289,83 +309,99 @@ def main() -> int:
 
         OUTPUT_DIR.mkdir(exist_ok=True)
 
-        # ========== Step 3 〜 6: 制裁情報動画 ==========
-        sanctions_video_id = None
-        sanctions_video_path = None
-        if sanctions:
-            logger.info("[INFO] Step 3a: 制裁情報AI原稿生成開始")
-            sanctions_script = generate_jra_sanctions_script(sanctions)
-            logger.info(f"[INFO] 制裁原稿生成完了（{len(sanctions_script)}文字）:\n{sanctions_script[:80]}...")
+        # 競馬場ごとにグループ化
+        sanctions_by_venue = _group_sanctions_by_venue(sanctions)
+        news_by_venue = _group_news_by_venue(news)
+        logger.info(
+            f"[INFO] 競馬場別グループ: "
+            f"制裁={list(sanctions_by_venue.keys())}, "
+            f"ニュース={list(news_by_venue.keys())}"
+        )
 
-            logger.info("[INFO] Step 4a: 制裁情報音声生成開始")
-            sanctions_audio_path = str(OUTPUT_DIR / f"jra_sanctions_audio_{date_filename}.wav")
-            sanctions_audio_path, sanctions_seg_durations = text_to_speech_segmented(
-                sanctions_script, sanctions_audio_path
-            )
-            temp_files.append(sanctions_audio_path)
-            logger.info(f"[INFO] 制裁音声ファイル生成完了: {sanctions_audio_path}")
+        # 生成した動画の記録
+        sanctions_results: list[tuple[str, str, str | None]] = []  # (venue, path, video_id)
+        news_results: list[tuple[str, str, str | None]] = []
 
-            logger.info("[INFO] Step 5a: 制裁情報動画生成開始")
-            sanctions_video_path = str(OUTPUT_DIR / f"jra_sanctions_{date_filename}.mp4")
-            sanctions_video_path = build_video(
-                audio_path=sanctions_audio_path,
-                script_text=sanctions_script,
-                output_path=sanctions_video_path,
-                theme="jra",
-                segment_durations=sanctions_seg_durations,
-            )
-            temp_files.append(sanctions_video_path)
-            logger.info(f"[INFO] 制裁動画ファイル生成完了: {sanctions_video_path}")
+        # ========== Step 3〜6: 制裁情報動画（競馬場ごと）==========
+        if sanctions_by_venue:
+            for venue, venue_sanctions in sanctions_by_venue.items():
+                logger.info(f"[INFO] ===== 制裁情報動画: {venue} ({len(venue_sanctions)}件) =====")
 
-            if not dry_run:
-                logger.info("[INFO] Step 6a: 制裁情報動画 YouTube投稿開始")
-                sanctions_video_id = upload_video(
-                    video_path=sanctions_video_path,
-                    title=build_jra_sanctions_title(date_str),
-                    description=build_jra_sanctions_description(sanctions_script),
-                    tags=JRA_SANCTIONS_TAGS,
+                logger.info(f"[INFO] Step 3a: 制裁情報AI原稿生成 ({venue})")
+                script = generate_jra_sanctions_script(venue_sanctions)
+                logger.info(f"[INFO] 制裁原稿({venue}): {len(script)}文字")
+
+                logger.info(f"[INFO] Step 4a: 制裁情報音声生成 ({venue})")
+                venue_fn = _safe_filename_venue(venue)
+                audio_path = str(OUTPUT_DIR / f"jra_sanctions_{venue_fn}_{date_filename}.wav")
+                audio_path, seg_durs = text_to_speech_segmented(script, audio_path)
+                temp_files.append(audio_path)
+
+                logger.info(f"[INFO] Step 5a: 制裁情報動画生成 ({venue})")
+                video_path = str(OUTPUT_DIR / f"jra_sanctions_{venue_fn}_{date_filename}.mp4")
+                video_path = build_video(
+                    audio_path=audio_path,
+                    script_text=script,
+                    output_path=video_path,
+                    theme="jra",
+                    segment_durations=seg_durs,
                 )
-                logger.info(f"[INFO] 制裁動画 投稿完了: https://www.youtube.com/watch?v={sanctions_video_id}")
+                temp_files.append(video_path)
+
+                video_id = None
+                if not dry_run:
+                    logger.info(f"[INFO] Step 6a: 制裁情報動画 YouTube投稿 ({venue})")
+                    video_id = upload_video(
+                        video_path=video_path,
+                        title=build_jra_sanctions_title(date_str, venue),
+                        description=build_jra_sanctions_description(script),
+                        tags=JRA_SANCTIONS_TAGS,
+                    )
+                    logger.info(f"[INFO] 制裁動画({venue}) 投稿完了: https://www.youtube.com/watch?v={video_id}")
+
+                sanctions_results.append((venue, video_path, video_id))
         else:
             logger.info("[INFO] 制裁情報なし - 制裁情報動画をスキップ")
 
-        # ========== Step 3 〜 6: ニュース動画 ==========
-        news_video_id = None
-        news_video_path = None
-        if news:
-            logger.info("[INFO] Step 3b: ニュースAI原稿生成開始")
-            news_script = generate_jra_news_script(news)
-            logger.info(f"[INFO] ニュース原稿生成完了（{len(news_script)}文字）:\n{news_script[:80]}...")
+        # ========== Step 3〜6: ニュース動画（競馬場ごと）==========
+        if news_by_venue:
+            for venue, venue_news in news_by_venue.items():
+                event_count = sum(len(a.get("events", [])) for a in venue_news)
+                logger.info(f"[INFO] ===== ニュース動画: {venue} ({event_count}件) =====")
 
-            logger.info("[INFO] Step 4b: ニュース音声生成開始")
-            news_audio_path = str(OUTPUT_DIR / f"jra_news_audio_{date_filename}.wav")
-            news_audio_path, news_seg_durations = text_to_speech_segmented(
-                news_script, news_audio_path
-            )
-            temp_files.append(news_audio_path)
-            logger.info(f"[INFO] ニュース音声ファイル生成完了: {news_audio_path}")
+                logger.info(f"[INFO] Step 3b: ニュースAI原稿生成 ({venue})")
+                script = generate_jra_news_script(venue_news)
+                logger.info(f"[INFO] ニュース原稿({venue}): {len(script)}文字")
 
-            logger.info("[INFO] Step 5b: ニュース動画生成開始")
-            news_video_path = str(OUTPUT_DIR / f"jra_news_{date_filename}.mp4")
-            news_video_path = build_video(
-                audio_path=news_audio_path,
-                script_text=news_script,
-                output_path=news_video_path,
-                theme="jra",
-                segment_durations=news_seg_durations,
-            )
-            temp_files.append(news_video_path)
-            logger.info(f"[INFO] ニュース動画ファイル生成完了: {news_video_path}")
+                logger.info(f"[INFO] Step 4b: ニュース音声生成 ({venue})")
+                venue_fn = _safe_filename_venue(venue)
+                audio_path = str(OUTPUT_DIR / f"jra_news_{venue_fn}_{date_filename}.wav")
+                audio_path, seg_durs = text_to_speech_segmented(script, audio_path)
+                temp_files.append(audio_path)
 
-            if not dry_run:
-                logger.info("[INFO] Step 6b: ニュース動画 YouTube投稿開始")
-                news_video_id = upload_video(
-                    video_path=news_video_path,
-                    title=build_jra_news_title(date_str),
-                    description=build_jra_news_description(news_script),
-                    tags=JRA_NEWS_TAGS,
+                logger.info(f"[INFO] Step 5b: ニュース動画生成 ({venue})")
+                video_path = str(OUTPUT_DIR / f"jra_news_{venue_fn}_{date_filename}.mp4")
+                video_path = build_video(
+                    audio_path=audio_path,
+                    script_text=script,
+                    output_path=video_path,
+                    theme="jra",
+                    segment_durations=seg_durs,
                 )
-                logger.info(f"[INFO] ニュース動画 投稿完了: https://www.youtube.com/watch?v={news_video_id}")
+                temp_files.append(video_path)
+
+                video_id = None
+                if not dry_run:
+                    logger.info(f"[INFO] Step 6b: ニュース動画 YouTube投稿 ({venue})")
+                    video_id = upload_video(
+                        video_path=video_path,
+                        title=build_jra_news_title(date_str, venue),
+                        description=build_jra_news_description(script),
+                        tags=JRA_NEWS_TAGS,
+                    )
+                    logger.info(f"[INFO] ニュース動画({venue}) 投稿完了: https://www.youtube.com/watch?v={video_id}")
+
+                news_results.append((venue, video_path, video_id))
         else:
             logger.info("[INFO] ニュース情報なし - ニュース動画をスキップ")
 
@@ -376,56 +412,60 @@ def main() -> int:
             for f in temp_files:
                 if f and Path(f).exists():
                     logger.info(f"[INFO] 保持: {Path(f).resolve()}")
-            logger.info("[INFO] 確認後に不要であれば output/ ディレクトリを手動削除してください")
         else:
-            # 本番モード: 投稿済みの一時ファイルを削除
             cleanup_temp_files(*temp_files)
 
         # ========== Step 8: 結果サマリー ==========
-        uploaded_count = sum(1 for v in [sanctions_video_id, news_video_id] if v)
+        all_results = sanctions_results + news_results
+        uploaded_count = sum(1 for _, _, vid in all_results if vid)
+        video_count = len(all_results)
+
         logger.info("=" * 60)
         logger.info("[INFO] ===== 実行サマリー =====")
         logger.info(f"[INFO] 日付: {date_str}")
-        logger.info(f"[INFO] 制裁情報取得: {len(sanctions)}件")
-        logger.info(f"[INFO] ニュース取得: {len(news)}件")
-        if sanctions_video_id:
-            logger.info(f"[INFO] 制裁情報動画URL: https://www.youtube.com/watch?v={sanctions_video_id}")
-        if news_video_id:
-            logger.info(f"[INFO] ニュース動画URL: https://www.youtube.com/watch?v={news_video_id}")
-        if dry_run:
-            for f in temp_files:
-                if f and Path(f).exists() and f.endswith(".mp4"):
-                    logger.info(f"[INFO] 動画確認パス: {Path(f).resolve()}")
+        logger.info(f"[INFO] 制裁情報取得: {len(sanctions)}件 / {len(sanctions_by_venue)}競馬場")
+        logger.info(f"[INFO] ニュース取得: {len(news)}件 / {len(news_by_venue)}競馬場")
+        logger.info(f"[INFO] 生成動画数: {video_count}本")
+        if not dry_run:
+            for venue, _, vid in sanctions_results:
+                if vid:
+                    logger.info(f"[INFO] 制裁動画({venue}): https://www.youtube.com/watch?v={vid}")
+            for venue, _, vid in news_results:
+                if vid:
+                    logger.info(f"[INFO] ニュース動画({venue}): https://www.youtube.com/watch?v={vid}")
+        else:
+            for _, path, _ in all_results:
+                if path and Path(path).exists():
+                    logger.info(f"[INFO] 動画確認パス: {Path(path).resolve()}")
             logger.info("[INFO] ★ ドライランのため YouTube には投稿していません ★")
         logger.info("[INFO] JRA YouTube Shorts 自動投稿 完了")
         logger.info("=" * 60)
 
-        # GitHub Actions Step Summary に結果を書き出す
-        sanctions_videos_generated = sanctions_video_path is not None
-        news_videos_generated = news_video_path is not None
+        # GitHub Actions Step Summary
         if not dry_run:
-            summary_rows = (
+            rows = (
                 f"| 日付 | {date_str} |\n"
-                f"| 制裁情報 | {len(sanctions)}件 |\n"
-                f"| ニュース | {len(news)}件 |\n"
+                f"| 制裁情報 | {len(sanctions)}件 / {len(sanctions_by_venue)}競馬場 |\n"
+                f"| ニュース | {len(news)}件 / {len(news_by_venue)}競馬場 |\n"
             )
-            if sanctions_video_id:
-                summary_rows += f"| 制裁動画URL | https://www.youtube.com/watch?v={sanctions_video_id} |\n"
-            if news_video_id:
-                summary_rows += f"| ニュース動画URL | https://www.youtube.com/watch?v={news_video_id} |\n"
+            for venue, _, vid in sanctions_results:
+                if vid:
+                    rows += f"| 制裁動画({venue}) | https://www.youtube.com/watch?v={vid} |\n"
+            for venue, _, vid in news_results:
+                if vid:
+                    rows += f"| ニュース動画({venue}) | https://www.youtube.com/watch?v={vid} |\n"
             write_step_summary(
                 f"## ✅ JRA Shorts 投稿完了（{uploaded_count}本）\n\n"
-                f"| 項目 | 値 |\n|------|----|\n"
-                + summary_rows
+                f"| 項目 | 値 |\n|------|----|\n" + rows
             )
         else:
             write_step_summary(
                 f"## ✅ JRA Shorts 動画生成完了（ドライラン）\n\n"
                 f"| 項目 | 値 |\n|------|----|\n"
                 f"| 日付 | {date_str} |\n"
-                f"| 制裁情報 | {len(sanctions)}件 |\n"
-                f"| ニュース | {len(news)}件 |\n"
-                f"| 生成動画数 | {sanctions_videos_generated + news_videos_generated}本 |\n\n"
+                f"| 制裁情報 | {len(sanctions)}件 / {len(sanctions_by_venue)}競馬場 |\n"
+                f"| ニュース | {len(news)}件 / {len(news_by_venue)}競馬場 |\n"
+                f"| 生成動画数 | {video_count}本 |\n\n"
                 f"生成した動画は **Artifacts** からダウンロードして確認してください。\n"
             )
         return 0
@@ -437,7 +477,6 @@ def main() -> int:
             f"```\n{e}\n```\n\n"
             f"詳細はログを確認してください。\n"
         )
-        # エラー時は音声ファイルのみ削除（動画は原因調査のために残す）
         if not dry_run:
             audio_files = [f for f in temp_files if f.endswith(".wav")]
             cleanup_temp_files(*audio_files)
