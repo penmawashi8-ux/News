@@ -399,6 +399,190 @@ def _escape_drawtext(text: str) -> str:
     return text
 
 
+def _generate_intro_clip(
+    date_str: str,
+    venue: str,
+    video_type: str,
+    bg_path: str | None,
+    font_path: str,
+    output_path: str,
+    duration: float = 2.0,
+) -> bool:
+    """
+    動画冒頭に表示するイントロクリップを生成する。
+    日付・競馬場名・動画種別を大きく表示した縦型mp4ファイルを出力する。
+
+    Args:
+        date_str: 日付文字列（例: "04/12"）
+        venue: 競馬場名（例: "中山"）
+        video_type: "制裁情報" または "今日の出来事"
+        bg_path: 背景画像パス（Noneで競馬グリーン単色）
+        font_path: フォントファイルパス
+        output_path: 出力mp4パス
+        duration: クリップ長さ（秒）
+
+    Returns:
+        True: 生成成功 / False: 失敗
+    """
+    font_param = f":fontfile='{font_path}'" if font_path else ""
+
+    cmd = ["ffmpeg", "-y"]
+
+    # 背景
+    if bg_path:
+        cmd += ["-loop", "1", "-t", str(duration), "-i", bg_path]
+    else:
+        cmd += [
+            "-f", "lavfi",
+            "-i", f"color=c=0x1a4a1a:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:r={VIDEO_FPS}:d={duration}",
+        ]
+
+    # 無音
+    cmd += ["-f", "lavfi", "-i", f"anullsrc=cl=stereo:r=44100:d={duration}"]
+
+    type_esc = _escape_drawtext(video_type)
+    venue_esc = _escape_drawtext(venue)
+    date_esc = _escape_drawtext(date_str)
+
+    # 種別ラベル色: 制裁=赤, 今日の出来事=青
+    type_color = "FF5050" if "制裁" in video_type else "50B4FF"
+
+    filter_v = (
+        f"[0:v]scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
+        f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT},"
+        f"drawbox=x=0:y=0:w=iw:h=ih:color=black@0.55:t=fill,"
+        f"drawtext=text='{type_esc}'{font_param}"
+        f":fontsize=90:fontcolor=0x{type_color}:borderw=4:bordercolor=black"
+        f":x=(w-text_w)/2:y=350,"
+        f"drawtext=text='{venue_esc}'{font_param}"
+        f":fontsize=250:fontcolor=yellow:borderw=8:bordercolor=black"
+        f":x=(w-text_w)/2:y=900,"
+        f"drawtext=text='{date_esc}'{font_param}"
+        f":fontsize=110:fontcolor=white:borderw=4:bordercolor=black"
+        f":x=(w-text_w)/2:y=1500[vout]"
+    )
+
+    cmd += [
+        "-filter_complex", filter_v,
+        "-map", "[vout]",
+        "-map", "1:a",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k",
+        "-r", str(VIDEO_FPS),
+        "-t", str(duration),
+        output_path,
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if result.returncode == 0:
+            logger.info(f"[INFO] イントロクリップ生成完了: {output_path}")
+            return True
+        logger.warning(f"[WARNING] イントロクリップ生成失敗: {result.stderr[-300:]}")
+        return False
+    except Exception as e:
+        logger.warning(f"[WARNING] イントロクリップ生成エラー: {e}")
+        return False
+
+
+def _concat_video_clips(input_paths: list[str], output_path: str) -> None:
+    """複数のmp4ファイルをffmpegのconcatデマクサで連結する（再エンコード）。"""
+    list_path = output_path.replace(".mp4", "_vlist.txt")
+    list_content = "\n".join(f"file '{Path(p).resolve()}'" for p in input_paths)
+
+    try:
+        with open(list_path, "w", encoding="utf-8") as f:
+            f.write(list_content)
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", list_path,
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k",
+            output_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            logger.error(f"[ERROR] 動画連結失敗: {result.stderr[-300:]}")
+    finally:
+        try:
+            Path(list_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def generate_thumbnail_image(
+    date_str: str,
+    venue: str,
+    video_type: str,
+    output_path: str,
+) -> str:
+    """
+    YouTubeサムネイル画像を生成する（1080x1920 PNG・縦型Shorts用）。
+    Pillowで競馬場名・日付・動画種別を大きく表示する。
+
+    Args:
+        date_str: 日付文字列（例: "04/12"）
+        venue: 競馬場名（例: "中山"）
+        video_type: "制裁情報" または "今日の出来事"
+        output_path: 出力PNGファイルパス
+
+    Returns:
+        生成したファイルのパス（失敗時は空文字）
+    """
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        logger.warning("[WARNING] Pillow未インストール: サムネイル生成スキップ")
+        return ""
+
+    W, H = 1080, 1920
+
+    # 背景画像（競馬場の背景をランダム選択、なければ競馬グリーン）
+    bg_path = _get_background_path("jra")
+    if bg_path:
+        try:
+            bg = Image.open(bg_path).convert("RGB").resize((W, H), Image.LANCZOS)
+        except Exception:
+            bg = Image.new("RGB", (W, H), (20, 60, 20))
+    else:
+        bg = Image.new("RGB", (W, H), (20, 60, 20))
+
+    # 暗いオーバーレイを重ねて文字を読みやすくする
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 160))
+    img = Image.alpha_composite(bg.convert("RGBA"), overlay).convert("RGB")
+    draw = ImageDraw.Draw(img)
+
+    font_path_str = _resolve_font_path()
+
+    def _font(size: int):
+        if font_path_str:
+            try:
+                return ImageFont.truetype(font_path_str, size)
+            except Exception:
+                pass
+        return ImageFont.load_default()
+
+    # 動画種別ラベル（上部・色分け）
+    type_color = (255, 80, 80) if "制裁" in video_type else (80, 180, 255)
+    draw.text((W // 2, 350), video_type, fill=type_color, font=_font(90),
+              anchor="mm", stroke_width=4, stroke_fill=(0, 0, 0))
+
+    # 競馬場名（中央・大きく・黄色）
+    draw.text((W // 2, 900), venue, fill=(255, 220, 50), font=_font(280),
+              anchor="mm", stroke_width=8, stroke_fill=(0, 0, 0))
+
+    # 日付（下部）
+    draw.text((W // 2, 1500), date_str, fill=(255, 255, 255), font=_font(130),
+              anchor="mm", stroke_width=4, stroke_fill=(0, 0, 0))
+
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    img.save(output_path, "PNG")
+    logger.info(f"[INFO] サムネイル画像生成完了: {output_path}")
+    return output_path
+
+
 def _get_audio_duration(audio_path: str) -> float:
     """音声ファイルの再生時間（秒）をFFprobeで取得する。"""
     try:
@@ -428,17 +612,25 @@ def build_video(
     output_path: str,
     theme: str = "jra",
     segment_durations: list[float] | None = None,
+    intro_date_str: str | None = None,
+    intro_venue: str | None = None,
+    intro_video_type: str | None = None,
 ) -> str:
     """
     VOICEVOXの音声・原稿テキスト・テーマから YouTube Shorts用動画を生成する。
+
+    intro_* 引数を指定すると、動画冒頭2秒に日付・競馬場・種別を表示する
+    イントロカードが自動で付加される（YouTubeサムネイルに映る）。
 
     Args:
         audio_path: 音声wavファイルのパス
         script_text: ナレーション原稿（字幕として焼き込む）
         output_path: 出力mp4ファイルのパス
         theme: "jra" または "nar"
-        segment_durations: 各セグメント（全角スペース区切り）の実音声長（秒）。
-                          指定するとタイミングが音声に正確に合う。
+        segment_durations: 各セグメントの実音声長（秒）。指定するとタイミングが正確に合う。
+        intro_date_str: イントロカードに表示する日付（例: "04/12"）
+        intro_venue: イントロカードに表示する競馬場名（例: "中山"）
+        intro_video_type: イントロカードに表示する種別（"制裁情報" or "今日の出来事"）
 
     Returns:
         生成された動画ファイルのパス
@@ -456,7 +648,6 @@ def build_video(
     font_path = _resolve_font_path()
 
     # 字幕drawtextフィルターの生成
-    # segment_durationsがあれば実音声長ベース、なければ文字数比率ベース
     if segment_durations:
         subtitle_drawtexts = _build_subtitle_drawtexts_segmented(
             script_text, segment_durations, font_path
@@ -469,27 +660,46 @@ def build_video(
 
     logger.info(f"[INFO] フォント: {font_path or '未設定'}")
 
+    # イントロあり → メイン動画を一時ファイルへ出力してイントロと連結
+    has_intro = bool(intro_date_str and intro_venue and intro_video_type)
+    main_output = output_path.replace(".mp4", "_main_tmp.mp4") if has_intro else output_path
+
     ffmpeg_cmd = _build_ffmpeg_command(
         audio_path=audio_path,
         bg_path=bg_path,
         bgm_path=bgm_path,
         subtitle_drawtexts=subtitle_drawtexts,
-        output_path=output_path,
+        output_path=main_output,
         duration=audio_duration,
     )
 
-    logger.info("[INFO] FFmpegコマンド実行")
-
-    result = subprocess.run(
-        ffmpeg_cmd,
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
+    logger.info("[INFO] FFmpegコマンド実行（メイン動画）")
+    result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=300)
 
     if result.returncode != 0:
         logger.error(f"[ERROR] FFmpeg実行失敗:\n{result.stderr[-1000:]}")
         raise RuntimeError(f"FFmpegの実行に失敗しました: {result.stderr[-500:]}")
+
+    if has_intro:
+        intro_path = output_path.replace(".mp4", "_intro_tmp.mp4")
+        intro_ok = _generate_intro_clip(
+            intro_date_str, intro_venue, intro_video_type,
+            bg_path, font_path, intro_path,
+        )
+
+        if intro_ok and Path(intro_path).exists() and Path(main_output).exists():
+            logger.info("[INFO] イントロクリップを連結中...")
+            _concat_video_clips([intro_path, main_output], output_path)
+        else:
+            # イントロ生成失敗 → メイン動画をそのまま使用
+            logger.warning("[WARNING] イントロ生成失敗 → メイン動画のみを使用")
+            Path(main_output).rename(output_path)
+
+        for tmp in [intro_path, main_output]:
+            try:
+                Path(tmp).unlink(missing_ok=True)
+            except Exception:
+                pass
 
     logger.info(f"[INFO] 動画生成完了: {output_path}")
     return output_path

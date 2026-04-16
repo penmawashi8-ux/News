@@ -237,6 +237,47 @@ def upload_video(
         raise RuntimeError(f"YouTube APIエラー: {error_message}")
 
 
+def upload_thumbnail(video_id: str, thumbnail_path: str) -> bool:
+    """
+    YouTube動画にサムネイル画像を設定する。
+    youtube.upload スコープのみでは権限不足となるため、失敗時はスキップして警告のみ出す。
+    フル権限（youtube スコープ）のトークンがある場合に動作する。
+
+    Args:
+        video_id: サムネイルを設定する動画のID
+        thumbnail_path: サムネイル画像のパス（PNG/JPEG）
+
+    Returns:
+        True: 設定成功 / False: 失敗またはスキップ
+    """
+    if not Path(thumbnail_path).exists():
+        logger.warning(f"[WARNING] サムネイルファイルが見つかりません: {thumbnail_path}")
+        return False
+
+    try:
+        creds = authenticate()
+        youtube = build("youtube", "v3", credentials=creds)
+        youtube.thumbnails().set(
+            videoId=video_id,
+            media_body=MediaFileUpload(thumbnail_path, mimetype="image/png"),
+        ).execute()
+        logger.info(f"[INFO] サムネイル設定完了: video_id={video_id}")
+        return True
+    except HttpError as e:
+        if e.status_code in (400, 403):
+            logger.warning(
+                "[WARNING] サムネイル設定失敗（権限不足）。"
+                "YouTubeスタジオで手動設定してください: "
+                f"https://studio.youtube.com/video/{video_id}/edit"
+            )
+        else:
+            logger.warning(f"[WARNING] サムネイル設定失敗: {e}")
+        return False
+    except Exception as e:
+        logger.warning(f"[WARNING] サムネイル設定失敗: {e}")
+        return False
+
+
 def build_jra_title(date_str: str) -> str:
     """
     JRA動画のタイトルを生成する。
