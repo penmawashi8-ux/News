@@ -36,7 +36,7 @@ from src.ai.script_generator import (
     generate_jra_sanctions_script,
 )
 from src.scraper.jra_scraper import get_news, get_sanctions
-from src.tts.voicevox_tts import text_to_speech
+from src.tts.voicevox_tts import register_user_dict, text_to_speech_segmented
 from src.uploader.youtube_uploader import (
     JRA_NEWS_TAGS,
     JRA_SANCTIONS_TAGS,
@@ -260,6 +260,9 @@ def main() -> int:
     # ドライランは環境変数でも指定可能
     dry_run = args.dry_run or os.getenv("DRY_RUN", "false").lower() == "true"
 
+    # ========== Step 0: VOICEVOXユーザー辞書登録 ==========
+    register_user_dict()
+
     # ========== Step 1: JRA開催日判定 ==========
     if not args.force:
         logger.info("[INFO] Step 1: JRA開催日判定")
@@ -296,7 +299,9 @@ def main() -> int:
 
             logger.info("[INFO] Step 4a: 制裁情報音声生成開始")
             sanctions_audio_path = str(OUTPUT_DIR / f"jra_sanctions_audio_{date_filename}.wav")
-            sanctions_audio_path = text_to_speech(sanctions_script, sanctions_audio_path)
+            sanctions_audio_path, sanctions_seg_durations = text_to_speech_segmented(
+                sanctions_script, sanctions_audio_path
+            )
             temp_files.append(sanctions_audio_path)
             logger.info(f"[INFO] 制裁音声ファイル生成完了: {sanctions_audio_path}")
 
@@ -307,6 +312,7 @@ def main() -> int:
                 script_text=sanctions_script,
                 output_path=sanctions_video_path,
                 theme="jra",
+                segment_durations=sanctions_seg_durations,
             )
             temp_files.append(sanctions_video_path)
             logger.info(f"[INFO] 制裁動画ファイル生成完了: {sanctions_video_path}")
@@ -333,7 +339,9 @@ def main() -> int:
 
             logger.info("[INFO] Step 4b: ニュース音声生成開始")
             news_audio_path = str(OUTPUT_DIR / f"jra_news_audio_{date_filename}.wav")
-            news_audio_path = text_to_speech(news_script, news_audio_path)
+            news_audio_path, news_seg_durations = text_to_speech_segmented(
+                news_script, news_audio_path
+            )
             temp_files.append(news_audio_path)
             logger.info(f"[INFO] ニュース音声ファイル生成完了: {news_audio_path}")
 
@@ -344,6 +352,7 @@ def main() -> int:
                 script_text=news_script,
                 output_path=news_video_path,
                 theme="jra",
+                segment_durations=news_seg_durations,
             )
             temp_files.append(news_video_path)
             logger.info(f"[INFO] ニュース動画ファイル生成完了: {news_video_path}")

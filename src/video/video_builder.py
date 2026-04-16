@@ -81,15 +81,62 @@ def _get_background_path(theme: str) -> str | None:
     return str(selected)
 
 
+def _generate_default_bgm(output_path: Path, duration: int = 600) -> bool:
+    """
+    ffmpegのsineジェネレーターでシンプルなアンビエントBGMを生成する。
+    C major chord (C4/E4/G4/C5) にエコーとローパスフィルターを適用。
+
+    Args:
+        output_path: 出力mp3ファイルパス
+        duration: 生成秒数（デフォルト10分）
+
+    Returns:
+        True: 生成成功 / False: 失敗
+    """
+    logger.info(f"[INFO] デフォルトBGMを生成します: {output_path}")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", f"sine=frequency=261.63:duration={duration}",
+        "-f", "lavfi", "-i", f"sine=frequency=329.63:duration={duration}",
+        "-f", "lavfi", "-i", f"sine=frequency=392.00:duration={duration}",
+        "-f", "lavfi", "-i", f"sine=frequency=523.25:duration={duration}",
+        "-filter_complex",
+        "[0][1][2][3]amix=inputs=4:duration=first,"
+        "volume=0.12,aecho=0.8:0.9:80:0.4,lowpass=f=1200[out]",
+        "-map", "[out]",
+        "-c:a", "libmp3lame", "-b:a", "128k",
+        str(output_path),
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if result.returncode == 0:
+            logger.info(f"[INFO] デフォルトBGM生成完了: {output_path}")
+            return True
+        logger.warning(f"[WARNING] BGM生成失敗: {result.stderr[-300:]}")
+        return False
+    except Exception as e:
+        logger.warning(f"[WARNING] BGM生成エラー: {e}")
+        return False
+
+
 def _get_bgm_path() -> str | None:
-    """BGMファイルをランダムに選択して返す。"""
-    if not BGM_DIR.exists():
-        return None
+    """
+    BGMファイルをランダムに選択して返す。
+    ファイルが存在しない場合は自動生成を試みる。
+    """
+    BGM_DIR.mkdir(parents=True, exist_ok=True)
 
     bgm_files = list(BGM_DIR.glob("*.mp3")) + list(BGM_DIR.glob("*.wav"))
     if not bgm_files:
-        logger.warning("[WARNING] BGMファイルが見つかりません")
-        return None
+        # BGMファイルがなければデフォルトBGMを生成
+        default_bgm = BGM_DIR / "ambient_bgm.mp3"
+        if _generate_default_bgm(default_bgm):
+            bgm_files = [default_bgm]
+        else:
+            logger.warning("[WARNING] BGMファイルの生成に失敗しました。BGMなしで続行します。")
+            return None
 
     selected = random.choice(bgm_files)
     logger.info(f"[INFO] BGM選択: {selected}")
@@ -238,6 +285,101 @@ def _build_subtitle_drawtexts(
     return filters
 
 
+def _add_drawtext_lines(
+    filters: list[str],
+    lines: list[str],
+    start_t: float,
+    end_t: float,
+    font_param: str,
+) -> None:
+    """複数行のテキストブロックをdrawtext フィルターとしてリストに追加する。"""
+    n_lines = len(lines)
+    block_height = n_lines * LINE_HEIGHT
+    block_start_y = SUBTITLE_BLOCK_CENTER_Y - block_height // 2
+
+    for j, line in enumerate(lines):
+        y = block_start_y + j * LINE_HEIGHT
+        escaped = _escape_drawtext(line)
+        filters.append(
+            f"drawtext=text='{escaped}'"
+            f"{font_param}"
+            f":fontsize={FONT_SIZE}"
+            f":fontcolor=white"
+            f":borderw={BORDER_WIDTH}"
+            f":bordercolor=black"
+            f":x=(w-text_w)/2"
+            f":y={y}"
+            f":enable='between(t,{start_t:.3f},{end_t:.3f})'"
+        )
+
+
+def _build_subtitle_drawtexts_segmented(
+    text: str,
+    segment_durations: list[float],
+    font_path: str,
+) -> list[str]:
+    """
+    セグメントごとの実際の音声長を使って字幕タイミングを算出する。
+    全角スペースで分割した各セグメントの実音声長を使うため、
+    文字数比率方式より読み上げ速度に忠実にタイミングが合う。
+
+    Args:
+        text: 全角スペースで区切られたナレーション原稿
+        segment_durations: 各セグメントの実音声長（秒）
+        font_path: フォントファイルパス
+
+    Returns:
+        drawtext フィルター文字列のリスト
+    """
+    segments = [s.strip() for s in text.split("\u3000") if s.strip()] if "\u3000" in text else [text.strip()]
+
+    font_param = f":fontfile='{font_path}'" if font_path else ""
+    filters: list[str] = []
+    elapsed = 0.0
+
+    # セグメント数と音声長リストが不一致の場合は文字数比率にフォールバック
+    if len(segments) != len(segment_durations):
+        logger.warning(
+            f"[WARNING] セグメント数({len(segments)})と音声長数({len(segment_durations)})が不一致 "
+            "→ 文字数比率にフォールバック"
+        )
+        cuts = _make_subtitle_cuts(text)
+        total_dur = sum(segment_durations) or 1.0
+        return _build_subtitle_drawtexts(cuts, total_dur, font_path)
+
+    for segment, seg_duration in zip(segments, segment_durations):
+        if seg_duration <= 0:
+            elapsed += seg_duration
+            continue
+
+        wrapped = textwrap.wrap(segment, width=SUBTITLE_MAX_CHARS)
+        if not wrapped:
+            elapsed += seg_duration
+            continue
+
+        # セグメントが表示行数上限を超える場合は複数カットに分割
+        sub_cuts: list[list[str]] = []
+        while len(wrapped) > SUBTITLE_LINES_PER_CUT:
+            sub_cuts.append(wrapped[:SUBTITLE_LINES_PER_CUT])
+            wrapped = wrapped[SUBTITLE_LINES_PER_CUT:]
+        if wrapped:
+            sub_cuts.append(wrapped)
+
+        if len(sub_cuts) == 1:
+            _add_drawtext_lines(filters, sub_cuts[0], elapsed, elapsed + seg_duration, font_param)
+            elapsed += seg_duration
+        else:
+            # 複数カット: カット内の文字数比率でseg_durationを分配
+            total_chars = sum(sum(len(l) for l in c) for c in sub_cuts) or 1
+            for chunk in sub_cuts:
+                chunk_chars = sum(len(l) for l in chunk)
+                cut_dur = (chunk_chars / total_chars) * seg_duration
+                _add_drawtext_lines(filters, chunk, elapsed, elapsed + cut_dur, font_param)
+                elapsed += cut_dur
+
+    return filters
+
+
 def _escape_drawtext(text: str) -> str:
     """
     FFmpeg drawtext フィルター用にテキストをエスケープする。
@@ -285,6 +427,7 @@ def build_video(
     script_text: str,
     output_path: str,
     theme: str = "jra",
+    segment_durations: list[float] | None = None,
 ) -> str:
     """
     VOICEVOXの音声・原稿テキスト・テーマから YouTube Shorts用動画を生成する。
@@ -294,6 +437,8 @@ def build_video(
         script_text: ナレーション原稿（字幕として焼き込む）
         output_path: 出力mp4ファイルのパス
         theme: "jra" または "nar"
+        segment_durations: 各セグメント（全角スペース区切り）の実音声長（秒）。
+                          指定するとタイミングが音声に正確に合う。
 
     Returns:
         生成された動画ファイルのパス
@@ -310,17 +455,27 @@ def build_video(
     bgm_path = _get_bgm_path()
     font_path = _resolve_font_path()
 
-    subtitle_cuts = _make_subtitle_cuts(script_text)
-    logger.info(f"[INFO] 字幕カット数: {len(subtitle_cuts)}, フォント: {font_path or '未設定'}")
+    # 字幕drawtextフィルターの生成
+    # segment_durationsがあれば実音声長ベース、なければ文字数比率ベース
+    if segment_durations:
+        subtitle_drawtexts = _build_subtitle_drawtexts_segmented(
+            script_text, segment_durations, font_path
+        )
+        logger.info(f"[INFO] 字幕タイミング: 実音声長ベース ({len(segment_durations)}セグメント)")
+    else:
+        subtitle_cuts = _make_subtitle_cuts(script_text)
+        subtitle_drawtexts = _build_subtitle_drawtexts(subtitle_cuts, audio_duration, font_path)
+        logger.info(f"[INFO] 字幕タイミング: 文字数比率ベース ({len(subtitle_cuts)}カット)")
+
+    logger.info(f"[INFO] フォント: {font_path or '未設定'}")
 
     ffmpeg_cmd = _build_ffmpeg_command(
         audio_path=audio_path,
         bg_path=bg_path,
         bgm_path=bgm_path,
-        subtitle_cuts=subtitle_cuts,
+        subtitle_drawtexts=subtitle_drawtexts,
         output_path=output_path,
         duration=audio_duration,
-        font_path=font_path,
     )
 
     logger.info("[INFO] FFmpegコマンド実行")
@@ -344,25 +499,23 @@ def _build_ffmpeg_command(
     audio_path: str,
     bg_path: str | None,
     bgm_path: str | None,
-    subtitle_cuts: list[dict],
+    subtitle_drawtexts: list[str],
     output_path: str,
     duration: float,
-    font_path: str,
 ) -> list[str]:
     """
     FFmpegコマンドを構築して返す。
 
     字幕は drawtext フィルターを使ってカット単位（4-5行ブロック）で表示する。
-    各カットは句点・感嘆符の区切りで切り替わる。
+    タイミングは呼び出し元で算出済みの drawtext フィルター文字列を受け取る。
 
     Args:
         audio_path: ナレーション音声パス
         bg_path: 背景画像パス（Noneの場合は黒背景）
         bgm_path: BGM音声パス（Noneの場合はBGMなし）
-        subtitle_cuts: _make_subtitle_cuts() の戻り値
+        subtitle_drawtexts: _build_subtitle_drawtexts*() の戻り値
         output_path: 出力mp4パス
         duration: 動画の長さ（秒）
-        font_path: フォントファイルパス（空文字の場合はデフォルト）
 
     Returns:
         FFmpegコマンドのリスト
@@ -396,9 +549,8 @@ def _build_ffmpeg_command(
     video_stream = "[bg]"
 
     # ========== drawtext 字幕フィルター（カット単位・複数行ブロック）==========
-    if subtitle_cuts and duration > 0:
-        drawtext_filters = _build_subtitle_drawtexts(subtitle_cuts, duration, font_path)
-        all_drawtext = ",".join(drawtext_filters)
+    if subtitle_drawtexts:
+        all_drawtext = ",".join(subtitle_drawtexts)
         filter_parts.append(f"{video_stream}{all_drawtext}[vout]")
         video_stream = "[vout]"
     else:

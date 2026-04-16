@@ -6,6 +6,7 @@ VOICEVOXに接続できない場合はpyttsx3でフォールバックする。
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import requests
@@ -181,6 +182,189 @@ def text_to_speech(
         return output_path
 
     raise RuntimeError("全ての音声合成方法が失敗しました。VOICEVOXの起動またはpyttsx3の設定を確認してください。")
+
+
+def _get_audio_duration_local(audio_path: str) -> float:
+    """ffprobeで音声ファイルの長さ（秒）を取得する。"""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "csv=p=0", audio_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        return float(result.stdout.strip())
+    except Exception:
+        return 0.0
+
+
+def _concat_audio_files(input_paths: list[str], output_path: str) -> None:
+    """複数のwavファイルをffmpegのconcatデマクサで無音なく連結する。"""
+    # concatリストファイルを作成（絶対パスで記述）
+    list_path = output_path.replace(".wav", "_concat_list.txt")
+    list_content = "\n".join(
+        f"file '{Path(p).resolve()}'" for p in input_paths
+    )
+    try:
+        with open(list_path, "w", encoding="utf-8") as f:
+            f.write(list_content)
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", list_path,
+            "-c", "copy",
+            output_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            logger.error(f"[ERROR] 音声連結失敗: {result.stderr[-500:]}")
+    finally:
+        try:
+            Path(list_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def text_to_speech_segmented(
+    text: str,
+    output_path: str,
+    speaker_id: int | None = None,
+) -> tuple[str, list[float]]:
+    """
+    テキストを全角スペース（　）で分割し、各セグメントを個別に音声合成する。
+    セグメントごとの実際の音声長を返すため、字幕タイミングを音声に正確に合わせられる。
+
+    Args:
+        text: 読み上げるテキスト（全角スペースで意味単位を区切る）
+        output_path: 出力wavファイルパス
+        speaker_id: VOICEVOXスピーカーID
+
+    Returns:
+        (output_path, segment_durations): 各セグメントの音声長（秒）のリスト
+    """
+    if speaker_id is None:
+        speaker_id = _get_speaker_id()
+
+    # 全角スペースでセグメント分割
+    segments = [s.strip() for s in text.split("\u3000") if s.strip()] if "\u3000" in text else []
+    if not segments:
+        segments = [text.strip()] if text.strip() else []
+
+    if len(segments) <= 1:
+        # セグメントが1つだけ → 通常合成してdurationを返す
+        result_path = text_to_speech(text, output_path, speaker_id)
+        duration = _get_audio_duration_local(result_path)
+        return result_path, [duration]
+
+    # 各セグメントを個別合成
+    output_dir = Path(output_path).parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem = Path(output_path).stem
+
+    segment_files: list[str] = []
+    segment_durations: list[float] = []
+
+    for i, segment in enumerate(segments):
+        seg_path = str(output_dir / f"_seg{i}_{stem}.wav")
+        ok = _voicevox_synthesis(segment, seg_path, speaker_id, DEFAULT_SPEED_SCALE)
+        if not ok:
+            logger.warning(f"[WARNING] セグメント{i} VOICEVOX失敗 → pyttsx3フォールバック")
+            _pyttsx3_synthesis(segment, seg_path)
+
+        if Path(seg_path).exists() and Path(seg_path).stat().st_size > 0:
+            dur = _get_audio_duration_local(seg_path)
+            segment_files.append(seg_path)
+            segment_durations.append(dur)
+        else:
+            # 合成失敗: 0秒のプレースホルダーとして扱う
+            segment_durations.append(0.0)
+            logger.warning(f"[WARNING] セグメント{i} 音声ファイル生成失敗")
+
+    # セグメント音声を連結
+    valid_files = [f for f, d in zip(segment_files, segment_durations) if d > 0]
+    if valid_files:
+        _concat_audio_files(valid_files, output_path)
+    else:
+        # 全セグメント失敗: フォールバックで全体合成
+        logger.warning("[WARNING] 全セグメント合成失敗 → 全体フォールバック合成")
+        text_to_speech(text, output_path, speaker_id)
+        duration = _get_audio_duration_local(output_path)
+        segment_durations = [duration / len(segments)] * len(segments)
+
+    # 一時ファイル削除
+    for f in segment_files:
+        try:
+            Path(f).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    total = sum(segment_durations)
+    logger.info(f"[INFO] セグメント合成完了: {len(segments)}セグメント / 合計{total:.1f}秒")
+    return output_path, segment_durations
+
+
+def register_user_dict(dict_path: str | None = None) -> bool:
+    """
+    VOICEVOXのユーザー辞書にカスタム読みを登録する。
+    競走馬・騎手名など固有名詞の読み誤りを防ぐ。
+
+    Args:
+        dict_path: 辞書JSONファイルのパス（省略時は assets/voicevox_dict.json）
+
+    Returns:
+        True: 登録成功 / False: 失敗またはVOICEVOX未起動
+    """
+    if dict_path is None:
+        from pathlib import Path as _Path
+        dict_path = str(_Path(__file__).parent.parent.parent / "assets" / "voicevox_dict.json")
+
+    if not Path(dict_path).exists():
+        logger.info(f"[INFO] 辞書ファイルが見つかりません（スキップ）: {dict_path}")
+        return False
+
+    try:
+        import json as _json
+        with open(dict_path, encoding="utf-8") as f:
+            data = _json.load(f)
+        words = data.get("words", [])
+    except Exception as e:
+        logger.warning(f"[WARNING] 辞書ファイルの読み込み失敗: {e}")
+        return False
+
+    if not words:
+        return True
+
+    base_url = _get_voicevox_url()
+
+    # 既存の辞書を取得してsurfaceで重複チェック
+    try:
+        existing_resp = requests.get(f"{base_url}/user_dict", timeout=10)
+        existing = existing_resp.json() if existing_resp.ok else {}
+        existing_surfaces = {v.get("surface") for v in existing.values()}
+    except Exception:
+        existing_surfaces = set()
+
+    registered = 0
+    for word in words:
+        surface = word.get("surface", "")
+        if not surface or surface in existing_surfaces:
+            continue
+        try:
+            params = {
+                "surface": surface,
+                "pronunciation": word.get("pronunciation", ""),
+                "accent_type": word.get("accent_type", 0),
+                "word_type": word.get("word_type", "PROPER_NOUN"),
+                "priority": word.get("priority", 5),
+            }
+            resp = requests.post(f"{base_url}/user_dict_word", params=params, timeout=10)
+            if resp.ok:
+                registered += 1
+        except Exception as e:
+            logger.warning(f"[WARNING] 辞書登録失敗 '{surface}': {e}")
+
+    logger.info(f"[INFO] VOICEVOX辞書登録完了: {registered}/{len(words)}件")
+    return True
 
 
 def check_voicevox_available() -> bool:
