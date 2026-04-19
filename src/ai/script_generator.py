@@ -495,7 +495,7 @@ def _fallback_jra_news_script(today: str, news: list[dict[str, Any]]) -> str:
                 # body内の全角スペースを半角に変換（名前内空白などがカット境界と混同されないよう）
                 body = ev.get("body", "").replace("\u3000", " ")
                 race_str = f"{race}で" if race else ""
-                body_short = body[:80] if body else ""
+                body_short = body[:150] if body else ""
                 parts.append(f"{i}件目、{race_str}{title}。{body_short}")
         else:
             summary = news[0].get("summary", "").replace("\u3000", " ")

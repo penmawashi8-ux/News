@@ -21,6 +21,14 @@ DEFAULT_SPEAKER_ID = 3      # ずんだもん
 DEFAULT_SPEED_SCALE = 1.1   # 話速（1.1倍）
 
 
+def _normalize_tts_text(text: str) -> str:
+    """TTS前のテキスト正規化（読み上げ改善）"""
+    import re as _re
+    # "8R" → "8レース"（VOICEVOXが "はちあーる" と読むのを防ぐ）
+    text = _re.sub(r'(\d+)R', lambda m: f'{m.group(1)}レース', text)
+    return text
+
+
 def _get_voicevox_url() -> str:
     """VOICEVOXエンジンのURLを環境変数から取得する"""
     return os.getenv("VOICEVOX_URL", DEFAULT_VOICEVOX_URL)
@@ -52,6 +60,7 @@ def _voicevox_synthesis(
     Returns:
         成功した場合True、失敗した場合False
     """
+    text = _normalize_tts_text(text)
     base_url = _get_voicevox_url()
 
     try:

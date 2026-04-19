@@ -307,6 +307,8 @@ def _fetch_news_article(url: str) -> dict[str, Any] | None:
             if el.find_parent(class_="display_none"):
                 continue
             text = el.get_text(separator=" ", strip=True)
+            # 漢字・仮名文字間のスペースを除去（"高杉 史麒" → "高杉史麒"）
+            text = re.sub(r'(?<=[\u4e00-\u9fff\u3040-\u30ff])\s+(?=[\u4e00-\u9fff\u3040-\u30ff])', '', text)
             if not text:
                 continue
 
