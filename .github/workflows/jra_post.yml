@@ -164,7 +164,7 @@ jobs:
             FORCE_FLAG="--force"
           fi
           DRY_RUN_FLAG=""
-          if [ "${{ github.event.inputs.dry_run }}" != "false" ]; then
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
             DRY_RUN_FLAG="--dry-run"
           fi
           python main_jra.py $FORCE_FLAG $DRY_RUN_FLAG
