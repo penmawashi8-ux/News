@@ -7,6 +7,7 @@ VOICEVOXに接続できない場合はpyttsx3でフォールバックする。
 import json
 import os
 import subprocess
+import uuid
 from pathlib import Path
 
 import requests
@@ -19,6 +20,13 @@ logger = get_logger(__name__)
 DEFAULT_VOICEVOX_URL = "http://localhost:50021"
 DEFAULT_SPEAKER_ID = 3      # ずんだもん
 DEFAULT_SPEED_SCALE = 1.1   # 話速（1.1倍）
+
+
+def _calc_mora_count(pronunciation: str) -> int:
+    """カタカナ読みのモーラ数を計算する（/import_user_dict に必要）"""
+    # 拗音の小文字（ャュョァィゥェォ）は直前の文字と合わせて1モーラ
+    combining = set("ァィゥェォャュョ")
+    return sum(1 for c in pronunciation if c not in combining)
 
 
 def _normalize_tts_text(text: str) -> str:
@@ -355,12 +363,48 @@ def register_user_dict(dict_path: str | None = None) -> bool:
 
     import time as _time
 
+    # 登録対象のみ抽出
+    targets = [w for w in words if w.get("surface") and w.get("surface") not in existing_surfaces]
+    if not targets:
+        logger.info("[INFO] VOICEVOX辞書: 新規登録対象なし")
+        return True
+
+    # 一括インポート用データを構築
+    import_dict = {}
+    for word in targets:
+        pronunciation = word.get("pronunciation", "")
+        import_dict[str(uuid.uuid4())] = {
+            "surface": word["surface"],
+            "pronunciation": pronunciation,
+            "accent_type": word.get("accent_type", 0),
+            "word_type": word.get("word_type", "PROPER_NOUN"),
+            "mora_count": _calc_mora_count(pronunciation),
+            "priority": word.get("priority", 5),
+        }
+
+    # /import_user_dict で1リクエスト一括登録
+    try:
+        resp = requests.post(
+            f"{base_url}/import_user_dict",
+            params={"override": False},
+            json=import_dict,
+            headers={"Content-Type": "application/json"},
+            timeout=30,
+        )
+        if resp.ok:
+            logger.info(f"[INFO] VOICEVOX辞書一括登録完了: {len(import_dict)}件")
+            return True
+        logger.warning(f"[WARNING] 一括登録失敗 HTTP {resp.status_code}: {resp.text[:200]}")
+    except Exception as e:
+        logger.warning(f"[WARNING] 一括登録失敗: {e}")
+
+    # フォールバック: 1件ずつ登録
+    import time as _time
+    logger.info("[INFO] フォールバック: 1件ずつ登録します")
     registered = 0
     failed = 0
-    for word in words:
-        surface = word.get("surface", "")
-        if not surface or surface in existing_surfaces:
-            continue
+    for word in targets:
+        surface = word["surface"]
         try:
             params = {
                 "surface": surface,
@@ -375,12 +419,12 @@ def register_user_dict(dict_path: str | None = None) -> bool:
             else:
                 failed += 1
                 logger.warning(f"[WARNING] 辞書登録失敗 '{surface}': HTTP {resp.status_code} {resp.text[:100]}")
-            _time.sleep(0.05)  # VOICEVOX APIへの連続リクエストを抑制
+            _time.sleep(0.05)
         except Exception as e:
             failed += 1
             logger.warning(f"[WARNING] 辞書登録失敗 '{surface}': {e}")
 
-    logger.info(f"[INFO] VOICEVOX辞書登録完了: {registered}件成功 / {failed}件失敗 / 計{len(words)}件")
+    logger.info(f"[INFO] VOICEVOX辞書登録完了: {registered}件成功 / {failed}件失敗")
     return True
 
 
