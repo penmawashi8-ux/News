@@ -353,7 +353,10 @@ def register_user_dict(dict_path: str | None = None) -> bool:
     except Exception:
         existing_surfaces = set()
 
+    import time as _time
+
     registered = 0
+    failed = 0
     for word in words:
         surface = word.get("surface", "")
         if not surface or surface in existing_surfaces:
@@ -369,10 +372,15 @@ def register_user_dict(dict_path: str | None = None) -> bool:
             resp = requests.post(f"{base_url}/user_dict_word", params=params, timeout=10)
             if resp.ok:
                 registered += 1
+            else:
+                failed += 1
+                logger.warning(f"[WARNING] 辞書登録失敗 '{surface}': HTTP {resp.status_code} {resp.text[:100]}")
+            _time.sleep(0.05)  # VOICEVOX APIへの連続リクエストを抑制
         except Exception as e:
+            failed += 1
             logger.warning(f"[WARNING] 辞書登録失敗 '{surface}': {e}")
 
-    logger.info(f"[INFO] VOICEVOX辞書登録完了: {registered}/{len(words)}件")
+    logger.info(f"[INFO] VOICEVOX辞書登録完了: {registered}件成功 / {failed}件失敗 / 計{len(words)}件")
     return True
 
 
