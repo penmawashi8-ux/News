@@ -1,0 +1,37 @@
+name: Keepalive（定時実行の自動停止防止）
+
+# ========================================
+# GitHub は 60日間リポジトリに動きがないと schedule 実行を自動で無効化する。
+# 月1回コミットしてリポジトリをアクティブに保ち、
+# 万一 JRA ワークフローが無効化されていたら再有効化する。
+# ========================================
+on:
+  schedule:
+    # 毎月1日・15日 09:00 JST（= UTC 0:00）
+    - cron: '0 0 1,15 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: 最終実行日時を記録してコミット
+        run: |
+          date -u '+%Y-%m-%dT%H:%M:%SZ' > .github/keepalive.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/keepalive.txt
+          git commit -m "keepalive: $(cat .github/keepalive.txt)"
+          git push
+
+      - name: JRA ワークフローを有効化（無効化されていた場合の保険）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow enable jra_post.yml --repo "${{ github.repository }}" || true
